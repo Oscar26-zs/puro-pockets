@@ -5,7 +5,7 @@
 **Versión:** 0.3 (requerimientos con decisiones resueltas; stack y privacidad definidos)
 **Fecha:** 2026-11-09
 **Propietario:** Oscar Zúñiga ("TosTar")
-**Propósito de este documento:** ser la fuente única de verdad del proyecto. Para cambiar una regla, primero se edita aquí (y se anota en el Registro de cambios) y después se toca el código.
+Material de origen del que se derivó la constitución. Ya no se edita: los cambios se hacen en `.specify/memory/constitution.md`.
 
 ---
 
@@ -105,12 +105,12 @@ Como no hay conexión bancaria, la app mide **flujos registrados**, no el saldo 
 ### 5.1 Ingreso base (salario) **[DECIDIDO]**
 - El salario **ingresa a fin de cada mes** y se toma como el ingreso neto del **mes siguiente**.
 - Ejemplo: el salario que entra el 30 de noviembre pertenece al mes presupuestario 2026-12 y se reparte con los porcentajes de diciembre.
-- Los gastos pertenecen al mes calendario en que ocurren (`mes` derivado de la fecha del gasto).
+- Los gastos pertenecen al mes calendario en que ocurren (el mes se deriva de la fecha del gasto).
 
 ### 5.2 Porcentajes por mes **[DECIDIDO]**
 - Los porcentajes son **modificables**.
 - **RN-01:** los porcentajes de un mes deben **sumar exactamente 100**. La app rechaza cualquier configuración que no cumpla.
-- **RN-02:** los porcentajes se guardan **por mes** (`budget_month_allocations`). Cambiar los porcentajes no altera meses anteriores.
+- **RN-02:** los porcentajes se guardan **por mes** (los porcentajes de cada mes). Cambiar los porcentajes no altera meses anteriores.
 - **RN-03 [PROPUESTO]:** si un mes no tiene porcentajes definidos, se copian del mes anterior.
 - Configuración inicial sugerida: Necesidades 50 %, Ahorro 30 %, Gustos 20 %.
 
@@ -120,7 +120,7 @@ Como no hay conexión bancaria, la app mide **flujos registrados**, no el saldo 
 - **RN-06:** un extra recién registrado queda en estado `pendiente` y se muestra como "sin asignar" en el dashboard hasta que se confirme el reparto. Nunca se asigna a ciegas.
 - **RN-07:** el reparto del extra puede incluir **bolsas personalizadas** (por ejemplo, Emergencia).
 - **RN-08:** el reparto en montos se calcula con enteros: las primeras bolsas reciben el monto redondeado y **la última absorbe el residuo** (por resta), para que la suma sea exacta.
-- **RN-09 [DECIDIDO]:** el extra pertenece al **mes en que entra** (`mes_presupuesto` = mes de su fecha).
+- **RN-09 [DECIDIDO]:** el extra pertenece al **mes en que entra** (el mes presupuestario = mes de su fecha).
 
 Flujo:
 
@@ -161,7 +161,7 @@ Ejemplo: USD 10,00 a ₡512,34  →  1 000 × 51 234 / 10 000 = 5 123,4  →  �
 - Las bolsas **no son fijas**: se pueden agregar en cualquier momento.
 - Una bolsa puede ser un **tipo propio** (por ejemplo, Emergencia es su propia bolsa, no un subtipo de Ahorro).
 - **RN-10:** cada bolsa tiene un `comportamiento` que define cómo funciona. No existe una lista fija de "tipos" en el código.
-- El campo opcional `grupo` solo sirve para estadísticas agrupadas (por ejemplo, agrupar Ahorro, Emergencia y Viaje). Puede quedar vacío.
+- El grupo, opcional, solo sirve para estadísticas agrupadas (por ejemplo, agrupar Ahorro, Emergencia y Viaje). Puede quedar vacío.
 
 ### 6.2 Comportamientos **[DECIDIDO]**
 
@@ -195,7 +195,7 @@ Ejemplo: USD 10,00 a ₡512,34  →  1 000 × 51 234 / 10 000 = 5 123,4  →  �
 - Si la bolsa tiene una meta activa, la meta se archiva junto con la bolsa.
 
 ### 6.5 Destino de sobrante por defecto **[PROPUESTO]**
-Cada bolsa `consumo` puede tener un `destino_sobrante_id` sugerido (por ejemplo, el sobrante de Gustos va a Viaje). Claude parte de ahí al proponer el cierre y el usuario solo confirma. El destino siempre es una bolsa acumulable.
+Cada bolsa `consumo` puede tener un destino de sobrante sugerido (por ejemplo, el sobrante de Gustos va a Viaje). Claude parte de ahí al proponer el cierre y el usuario solo confirma. El destino siempre es una bolsa acumulable.
 
 ---
 
@@ -255,7 +255,7 @@ Bolsa "Viaje" (acumulable)            Meta: ₡500.000
 Principio: **el dinero es uno solo**. Si una bolsa se pasó, ese dinero salió de otra, y debe quedar registrado.
 
 - **RN-39:** se puede mover dinero entre bolsas **en cualquier momento**, no solo al cierre.
-- **RN-40:** todo movimiento se guarda en `transfers` con fecha, mes, origen, destino, monto (en colones), motivo y nota.
+- **RN-40:** todo movimiento se guarda en el registro de transferencias con fecha, mes, origen, destino, monto (en colones), motivo y nota.
 - **RN-41:** el monto debe ser positivo y el origen distinto del destino.
 - **RN-42:** no se puede mover más de lo disponible en la bolsa de origen (su saldo, si es acumulable; su disponible del mes, si es de consumo).
 - **RN-43:** las transferencias **nunca se editan ni se borran**. Un error se corrige con una transferencia en sentido contrario.
@@ -263,7 +263,7 @@ Principio: **el dinero es uno solo**. Si una bolsa se pasó, ese dinero salió d
 - **RN-45 [DEROGADA en v0.2]:** *(antes: una transferencia podía tener como destino una meta.)* Las metas no reciben dinero: se transfiere a su bolsa.
 - **RN-58 [PROPUESTO]:** al mover dinero **fuera de una bolsa que tiene una meta activa**, la tool de vista previa advierte el efecto sobre el avance de la meta (por ejemplo, "baja de 36 % a 30 %").
 - Motivos permitidos: `cubrir_sobregasto`, `reasignacion`, `cierre_de_mes`, `ajuste`.
-- El campo `motivo` permite analizar patrones (por ejemplo, cuántas veces se cubrió Gustos con Necesidades, lo que indica si los porcentajes están mal calibrados).
+- El motivo de cada transferencia permite analizar patrones (por ejemplo, cuántas veces se cubrió Gustos con Necesidades, lo que indica si los porcentajes están mal calibrados).
 
 ### 9.1 Presupuesto ajustado
 ```
@@ -326,7 +326,7 @@ Todos los valores de cálculo son colones enteros. `mes` tiene formato `YYYY-MM`
 
 ### 11.1 Bolsa de consumo (mes actual)
 ```
-asignado             = Σ income_allocations.monto de la bolsa (ingresos del mes presupuestario)
+asignado             = Σ lo asignado a la bolsa por los ingresos del mes (mes presupuestario)
 presupuesto ajustado = asignado + transferencias recibidas del mes − transferencias enviadas del mes
 disponible           = presupuesto ajustado − gastos del mes
 % usado              = gastos del mes / presupuesto ajustado   [PROPUESTO]
