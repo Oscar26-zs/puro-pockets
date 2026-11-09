@@ -42,6 +42,7 @@ SCOPE_OFFLINE = "offline_access"
 VALID_SCOPES = [SCOPE_MCP, SCOPE_OFFLINE]
 OWNER_SUBJECT = "owner"
 PENDING_TTL_SECONDS = 600  # tiempo para completar el inicio de sesión
+COMPLETED_TTL_SECONDS = 120  # ventana para responder igual a un envío repetido del formulario
 # Identifica este proceso en los registros (contenedor + arranque), para detectar réplicas
 SERVER_INSTANCE = f"{socket.gethostname()}:{os.getpid()}:{int(time.time())}"
 
@@ -125,6 +126,7 @@ class OwnerOAuthProvider:
         default_factory=lambda: EventLimiter(max_events=5, window_seconds=3600)
     )
     _pending: dict[str, PendingAuthorization] = field(default_factory=dict)
+    _completed: dict[str, tuple[str, float]] = field(default_factory=dict)
 
     async def _db(self, fn: Callable[..., T], *args: object) -> T:
         return await anyio.to_thread.run_sync(partial(fn, *args))
@@ -252,7 +254,24 @@ class OwnerOAuthProvider:
             pending.client_id[:8],
             pending.redirect_domain,
         )
-        return construct_redirect_uri(pending.redirect_uri, code=code, state=pending.state)
+        redirect = construct_redirect_uri(pending.redirect_uri, code=code, state=pending.state)
+        # Se recuerda unos minutos para responder igual a un envío repetido del formulario (Enter +
+        # clic, doble clic, autocompletado): el navegador muestra la última respuesta y, sin esto,
+        # el segundo envío tapaba la redirección buena con "Solicitud vencida"
+        self._purge_completed()
+        self._completed[request_id] = (redirect, self.clock())
+        return redirect
+
+    def _purge_completed(self) -> None:
+        limit = self.clock() - COMPLETED_TTL_SECONDS
+        for key in [k for k, (_, at) in self._completed.items() if at < limit]:
+            del self._completed[key]
+
+    def get_completed_redirect(self, request_id: str) -> str | None:
+        """Redirección ya emitida para esta solicitud (solo durante COMPLETED_TTL_SECONDS)."""
+        self._purge_completed()
+        entry = self._completed.get(request_id)
+        return entry[0] if entry else None
 
     async def load_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: str

@@ -176,3 +176,42 @@ def test_reinicio_entre_authorize_y_login_da_solicitud_vencida_y_queda_registrad
     assert f"Solicitud de inicio de sesión creada: solicitud={request_id[:6]}" in logs
     assert f"Solicitud de inicio de sesión no encontrada: solicitud={request_id[:6]}" in logs
     assert request_id not in logs  # solo 6 caracteres
+
+
+def test_envio_doble_del_formulario_devuelve_la_misma_redireccion(caplog):
+    """Caso real del homelab: login correcto y un segundo envío del mismo formulario."""
+    caplog.set_level(logging.INFO, logger="puro_pockets.auth")
+    with _make_client() as http:
+        client_id = _register(http).json()["client_id"]
+        verifier, challenge = _pkce()
+        login_url = _authorize(http, client_id, challenge).headers["location"]
+        first = _login(http, login_url, PASSWORD)
+        second = _login(http, login_url, PASSWORD)  # Enter + clic, doble clic…
+        assert first.status_code == second.status_code == 302
+        assert second.headers["location"] == first.headers["location"]
+
+        # El código sigue siendo de un solo uso
+        code = parse_qs(urlsplit(first.headers["location"]).query)["code"][0]
+        exchange = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": CALLBACK,
+            "client_id": client_id,
+            "code_verifier": verifier,
+            "resource": RESOURCE,
+        }
+        assert http.post("/token", data=exchange).status_code == 200
+        assert http.post("/token", data=exchange).status_code == 400
+    assert "Envío repetido del inicio de sesión" in caplog.text
+    assert code not in caplog.text
+
+
+def test_envio_repetido_exige_la_contrasena_correcta():
+    with _make_client() as http:
+        client_id = _register(http).json()["client_id"]
+        _, challenge = _pkce()
+        login_url = _authorize(http, client_id, challenge).headers["location"]
+        assert _login(http, login_url, PASSWORD).status_code == 302
+        repeated = _login(http, login_url, "incorrecta")
+        assert repeated.status_code == 400
+        assert "location" not in repeated.headers

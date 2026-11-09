@@ -126,6 +126,22 @@ def build_login_handler(
                 f"Espera unos {minutes} minutos antes de volver a intentarlo.",
                 429,
             )
+
+        # Envío repetido de un formulario que ya inició sesión: misma redirección, pero solo si la
+        # contraseña vuelve a ser correcta (el identificador de la solicitud no basta)
+        completed = provider.get_completed_redirect(request_id)
+        if completed is not None:
+            if verifier.enabled and await verifier.verify(password):
+                logger.info(
+                    "Envío repetido del inicio de sesión: se devuelve la misma redirección "
+                    "(solicitud=%s)",
+                    request_id[:6],
+                )
+                return RedirectResponse(completed, status_code=302, headers=headers)
+            limiter.record_failure(ip, now)
+            logger.warning("Envío repetido con contraseña incorrecta: ip=%s", ip)
+            return respond(*expired, 400)
+
         pending = provider.get_pending(request_id)
         if pending is None:
             return respond(*expired, 400)
