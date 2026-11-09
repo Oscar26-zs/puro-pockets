@@ -1,0 +1,38 @@
+name: puro-pockets
+
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Falta POSTGRES_DB en .env}
+      POSTGRES_USER: ${POSTGRES_USER:?Falta POSTGRES_USER en .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Falta POSTGRES_PASSWORD en .env}
+    volumes:
+      # Desde PostgreSQL 18 la imagen guarda los datos en /var/lib/postgresql/18/docker:
+      # el volumen se monta en /var/lib/postgresql (no en /var/lib/postgresql/data).
+      - pgdata:/var/lib/postgresql
+    ports:
+      # Solo accesible desde este equipo
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  mcp:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      DB_CONNECT_TIMEOUT: ${DB_CONNECT_TIMEOUT:-2}
+      # Dentro del contenedor escucha en todas sus interfaces; Docker publica el puerto solo en 127.0.0.1
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8000"
+    ports:
+      - "127.0.0.1:${MCP_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
