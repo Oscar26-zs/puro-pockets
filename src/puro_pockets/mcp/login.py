@@ -155,7 +155,7 @@ def build_login_handler(
         logger.info(
             "Inicio de sesión correcto: ip=%s client_id=%s retorno=%s",
             ip,
-            pending.client_id,
+            pending.client_id[:8],
             pending.redirect_domain,
         )
         return RedirectResponse(

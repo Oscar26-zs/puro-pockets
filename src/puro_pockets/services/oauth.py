@@ -128,8 +128,18 @@ class OwnerOAuthProvider:
     # --- Clientes (RFC 7591) ---
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
-        raw = await self._db(self.store.get_client, client_id)
-        return OAuthClientInformationFull.model_validate_json(raw) if raw else None
+        try:
+            raw = await self._db(self.store.get_client, client_id)
+            if not raw:
+                # Nota: si varias réplicas del túnel apuntan a bases distintas, el cliente puede
+                # existir en otra máquina (ver README, "Problemas frecuentes").
+                logger.info("Cliente no encontrado en esta base: client_id=%s", client_id[:8])
+                return None
+            return OAuthClientInformationFull.model_validate_json(raw)
+        except Exception:
+            # No se oculta como "no encontrado": se registra la excepción real y se propaga
+            logger.exception("Error al leer el cliente client_id=%s", client_id[:8])
+            raise
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         if not self.registration_limiter.allow(self.clock()):
@@ -158,7 +168,7 @@ class OwnerOAuthProvider:
         await self._db(self.store.save_client, client_info.client_id, client_info.model_dump_json())
         logger.info(
             "Cliente registrado: client_id=%s nombre=%r retorno=%s",
-            client_info.client_id,
+            client_info.client_id[:8],
             client_info.client_name,
             ", ".join(sorted({redirect_domain(u) for u in uris})),
         )
@@ -214,7 +224,9 @@ class OwnerOAuthProvider:
             ),
         )
         logger.info(
-            "Código emitido: client_id=%s retorno=%s", pending.client_id, pending.redirect_domain
+            "Código emitido: client_id=%s retorno=%s",
+            pending.client_id[:8],
+            pending.redirect_domain,
         )
         return construct_redirect_uri(pending.redirect_uri, code=code, state=pending.state)
 
@@ -241,10 +253,10 @@ class OwnerOAuthProvider:
     ) -> OAuthToken:
         now = self.clock()
         if not await self._db(self.store.consume_code, hash_token(authorization_code.code), now):
-            logger.warning("Código reutilizado o vencido: client_id=%s", client.client_id)
+            logger.warning("Código reutilizado o vencido: client_id=%s", client.client_id[:8])
             raise TokenError("invalid_grant", "El código ya se usó.")
         family_id = str(uuid.uuid4())
-        logger.info("Tokens emitidos: client_id=%s cadena=%s", client.client_id, family_id[:8])
+        logger.info("Tokens emitidos: client_id=%s cadena=%s", client.client_id[:8], family_id[:8])
         return await self._issue_pair(
             client.client_id, family_id, tuple(authorization_code.scopes), now
         )
@@ -296,7 +308,7 @@ class OwnerOAuthProvider:
             logger.warning(
                 "Refresco reutilizado: cadena %s revocada (client_id=%s)",
                 record.family_id[:8],
-                client.client_id,
+                client.client_id[:8],
             )
             return None
         return RefreshToken(
@@ -321,7 +333,7 @@ class OwnerOAuthProvider:
             if record is not None:
                 await self._db(self.store.revoke_family, record.family_id, now)
             raise TokenError("invalid_grant", "El token de refresco ya no es válido.")
-        logger.info("Refresco: client_id=%s cadena=%s", client.client_id, record.family_id[:8])
+        logger.info("Refresco: client_id=%s cadena=%s", client.client_id[:8], record.family_id[:8])
         return await self._issue_pair(client.client_id, record.family_id, tuple(scopes), now)
 
     async def load_access_token(self, token: str) -> AccessToken | None:
@@ -345,5 +357,5 @@ class OwnerOAuthProvider:
         if record is not None:
             await self._db(self.store.revoke_family, record.family_id, self.clock())
             logger.info(
-                "Revocación: cadena %s (client_id=%s)", record.family_id[:8], record.client_id
+                "Revocación: cadena %s (client_id=%s)", record.family_id[:8], record.client_id[:8]
             )

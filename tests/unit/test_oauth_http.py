@@ -41,14 +41,19 @@ INITIALIZE = {
 }
 
 
-def _make_client(registration_enabled: bool = True, password_hash: str | None = PASSWORD_HASH):
+def _make_client(
+    registration_enabled: bool = True,
+    password_hash: str | None = PASSWORD_HASH,
+    store=None,
+):
+    """App completa nueva. Pasar el mismo `store` a dos llamadas simula un reinicio del servidor."""
     settings = Settings(
         database_url="postgresql+psycopg://u:p@127.0.0.1:1/x",
         public_hostname="mcp.puropockets.space",
         allowed_origins=("https://claude.ai",),
     )
     provider = OwnerOAuthProvider(
-        store=InMemoryOAuthStore(),
+        store=store if store is not None else InMemoryOAuthStore(),
         config=OAuthConfig(
             issuer_url=BASE,
             resource_url=RESOURCE,
