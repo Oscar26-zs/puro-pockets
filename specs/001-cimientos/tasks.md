@@ -87,12 +87,12 @@ documentación en español (FR-016).
 
 ### Tests for User Story 2 ⚠️
 
-- [ ] T024 [US2] Prueba de arquitectura en `tests/unit/test_architecture.py`: analiza con `ast` todos los `.py` de `src/puro_pockets/domain/` y falla si importa `mcp`, `sqlalchemy`, `psycopg`, `alembic`, `puro_pockets.db`, `puro_pockets.mcp` o `puro_pockets.services`; incluir un caso que compruebe que el detector reconoce un `import sqlalchemy` en un fuente de ejemplo (FR-010)
+- [X] T024 [US2] Prueba de arquitectura en `tests/unit/test_architecture.py`: analiza con `ast` todos los `.py` de `src/puro_pockets/domain/` y falla si importa `mcp`, `sqlalchemy`, `psycopg`, `alembic`, `puro_pockets.db`, `puro_pockets.mcp` o `puro_pockets.services`; incluir un caso que compruebe que el detector reconoce un `import sqlalchemy` en un fuente de ejemplo (FR-010)
 
 ### Implementation for User Story 2
 
-- [ ] T025 [US2] Crear `.github/workflows/ci.yml`: en cada `push` y `pull_request`, Ubuntu, `astral-sh/setup-uv` con versión fijada, `uv sync --frozen`, `uv run ruff check`, `uv run ruff format --check`, `uv run pytest -m "not integration"` (FR-012)
-- [ ] T026 [US2] Dejar el código limpio: `uv run ruff format` y `uv run ruff check` sin errores en todo el repositorio
+- [X] T025 [US2] Crear `.github/workflows/ci.yml`: en cada `push` y `pull_request`, Ubuntu, `astral-sh/setup-uv` con versión fijada, `uv sync --frozen`, `uv run ruff check`, `uv run ruff format --check`, `uv run pytest -m "not integration"` (FR-012)
+- [X] T026 [US2] Dejar el código limpio: `uv run ruff format` y `uv run ruff check` sin errores en todo el repositorio
 
 **Checkpoint**: verificaciones locales en verde; el CI se comprueba en GitHub tras el push del propietario.
 
