@@ -26,11 +26,11 @@ documentación en español (FR-016).
 
 **Purpose**: inicializar el proyecto Python y su configuración.
 
-- [ ] T001 Crear `pyproject.toml`: nombre `puro-pockets`, paquete `puro_pockets` en `src/`, `requires-python = ">=3.12"`, dependencias `mcp==2.3.0` (exacta, FR-018), `sqlalchemy>=2.0`, `psycopg[binary]>=3.2`, `alembic>=1.13`; grupo `dev` con `pytest` y `ruff`; `[tool.ruff]` con `line-length = 100` y reglas `E,F,I,UP,B`; `[tool.pytest.ini_options]` con `testpaths = ["tests"]`, `pythonpath = ["src"]` y marcador `integration` ("requiere los servicios levantados")
-- [ ] T002 Crear el esqueleto de paquetes con `__init__.py` en `src/puro_pockets/`, `src/puro_pockets/domain/`, `src/puro_pockets/services/`, `src/puro_pockets/db/`, `src/puro_pockets/mcp/`, y las carpetas `tests/unit/`, `tests/integration/`, `scripts/`
-- [ ] T003 Generar `uv.lock` con `uv lock` y comprobar `uv sync` (FR-013)
-- [ ] T004 [P] Actualizar `.env.example`: `DATABASE_URL` con driver `postgresql+psycopg://`, variante para el equipo (`localhost`) y nota de que dentro de Compose el host es `db`; agregar `MCP_HOST`/`MCP_PORT` y `DB_CONNECT_TIMEOUT` (por defecto 2); sin valores reales (FR-009)
-- [ ] T005 [P] Verificar que `.gitignore` excluye `.env` y no excluye `.env.example` (`git check-ignore`)
+- [X] T001 Crear `pyproject.toml`: nombre `puro-pockets`, paquete `puro_pockets` en `src/`, `requires-python = ">=3.12"`, dependencias `mcp==2.3.0` (exacta, FR-018), `sqlalchemy>=2.0`, `psycopg[binary]>=3.2`, `alembic>=1.13`; grupo `dev` con `pytest` y `ruff`; `[tool.ruff]` con `line-length = 100` y reglas `E,F,I,UP,B`; `[tool.pytest.ini_options]` con `testpaths = ["tests"]`, `pythonpath = ["src"]` y marcador `integration` ("requiere los servicios levantados")
+- [X] T002 Crear el esqueleto de paquetes con `__init__.py` en `src/puro_pockets/`, `src/puro_pockets/domain/`, `src/puro_pockets/services/`, `src/puro_pockets/db/`, `src/puro_pockets/mcp/`, y las carpetas `tests/unit/`, `tests/integration/`, `scripts/`
+- [X] T003 Generar `uv.lock` con `uv lock` y comprobar `uv sync` (FR-013)
+- [X] T004 [P] Actualizar `.env.example`: `DATABASE_URL` con driver `postgresql+psycopg://`, variante para el equipo (`localhost`) y nota de que dentro de Compose el host es `db`; agregar `MCP_HOST`/`MCP_PORT` y `DB_CONNECT_TIMEOUT` (por defecto 2); sin valores reales (FR-009)
+- [X] T005 [P] Verificar que `.gitignore` excluye `.env` y no excluye `.env.example` (`git check-ignore`)
 
 ---
 
