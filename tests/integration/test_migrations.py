@@ -35,10 +35,10 @@ def test_subir_dos_veces_bajar_y_volver_a_subir(database_url):
 
     command.upgrade(config, "head")
     command.upgrade(config, "head")  # la segunda vez no hace nada y no falla
-    assert _current_revision(database_url) == "0001_base"
+    assert _current_revision(database_url) == "0002_oauth"
 
     command.downgrade(config, "base")
     assert _current_revision(database_url) is None
 
     command.upgrade(config, "head")
-    assert _current_revision(database_url) == "0001_base"
+    assert _current_revision(database_url) == "0002_oauth"
