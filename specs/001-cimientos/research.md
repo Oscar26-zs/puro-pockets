@@ -39,14 +39,18 @@ solo van las decisiones técnicas de implementación y su verificación.
 
 ## R3. Acceso a la base y tiempo límite de conexión
 
-- **Decision:** SQLAlchemy 2.x con el driver psycopg 3 (`psycopg[binary]`). El servidor usa el modo
-  asíncrono (`postgresql+psycopg://` con `create_async_engine`); Alembic usa el modo síncrono con el
-  mismo driver. Tiempo límite de conexión de 2 segundos con
-  `connect_args={"connect_timeout": 2}` y, como respaldo, `asyncio.timeout(3)` alrededor de la
-  comprobación, para que `ping` responda siempre en menos de 5 segundos (SC-004).
-- **Rationale:** un solo driver para los dos modos; `connect_timeout` es nativo de libpq.
-- **Alternatives considered:** asyncpg (solo asíncrono, obligaría a un segundo driver para Alembic);
-  psycopg2 (sin soporte asíncrono).
+- **Decision:** SQLAlchemy 2.x con el driver psycopg 3 (`psycopg[binary]`) en modo **síncrono**, tanto
+  para el servidor como para Alembic. La comprobación de `ping` corre en un hilo
+  (`anyio.to_thread.run_sync`, con `abandon_on_cancel=True`) dentro de `anyio.fail_after`. Tiempo
+  límite de conexión de 2 segundos con `connect_args={"connect_timeout": 2}`; el límite total de la
+  comprobación es de 3 segundos, para que `ping` responda siempre en menos de 5 (SC-004).
+- **Rationale:** psycopg en modo asíncrono no funciona con el event loop por defecto de Windows
+  (Proactor), que es el que usan las pruebas en el equipo de desarrollo. El modo síncrono en un hilo
+  funciona igual en Windows y en el contenedor Linux, y usa un solo driver para todo.
+  (Ajuste hecho durante la implementación; la versión inicial del plan proponía el modo asíncrono.)
+- **Alternatives considered:** modo asíncrono de psycopg (falla en Windows sin cambiar el event loop);
+  asyncpg (solo asíncrono, obligaría a un segundo driver para Alembic); psycopg2 (sin soporte
+  asíncrono y en mantenimiento).
 
 ## R4. PostgreSQL 18 en Docker
 
