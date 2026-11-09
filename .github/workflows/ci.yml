@@ -1,0 +1,33 @@
+# Verificación automática en cada push: estilo (ruff) y pruebas unitarias.
+# Las pruebas de integración necesitan la base levantada y corren en el equipo de desarrollo.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  calidad:
+    name: Estilo y pruebas unitarias
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.12.5"
+
+      - name: Instalar dependencias (uv.lock)
+        run: uv sync --frozen
+
+      - name: Estilo (ruff check)
+        run: uv run ruff check .
+
+      - name: Formato (ruff format --check)
+        run: uv run ruff format --check .
+
+      - name: Pruebas unitarias
+        run: uv run pytest -m "not integration"
