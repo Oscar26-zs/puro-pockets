@@ -1,6 +1,6 @@
 # Plan técnico de Puro Pockets
 
-**Versión:** 0.3
+**Versión:** 0.4
 **Fecha:** 2026-11-09
 **Capa:** 2 en la gobernanza de `.specify/memory/constitution.md`. Decide la técnica; si contradice a
 la constitución, gana la constitución y se corrige este documento.
@@ -28,7 +28,7 @@ esquema o la arquitectura.
 | Servidor MCP | Transporte Streamable HTTP desde el Hito 1, publicado solo en `127.0.0.1`; remoto por HTTPS desde el Hito 2 | [DECIDIDO] (decisión 9, Hito 1) |
 | SDK de MCP | `mcp==2.3.0` (versión exacta); servidor con `MCPServer` importada desde `mcp.server.mcpserver`. Verificado el 2026-11-09 en PyPI y en la guía oficial de migración v1 → v2, y confirmado al implementar el Hito 1 (prueba de humo `tests/unit/test_sdk_import.py`). Protección contra DNS rebinding configurada de forma explícita para hosts locales. | [DECIDIDO] (Hito 1) |
 | Verificación automática (CI) | En cada push a GitHub: ruff y pruebas unitarias. Las pruebas de integración corren en local. | [DECIDIDO] (Hito 1) |
-| Publicación | Túnel con nombre de Cloudflare hacia un subdominio fijo | [DECIDIDO] (decisión 9) |
+| Publicación | Túnel con nombre de Cloudflare (remotamente administrado), contenedor `cloudflare/cloudflared:2026.10.3`, hacia `https://mcp.puropockets.space` (ver "Acceso remoto") | [DECIDIDO] (decisión 9, Hito 2) |
 | Autenticación del MCP | OAuth (el MCP actúa como servidor de recursos) | [DECIDIDO] |
 | Servidor de autorización de OAuth | Propio o externo | [ABIERTO]: se resuelve en el Hito 3 |
 | Pruebas y estilo | pytest y ruff; CI en GitHub Actions | [DECIDIDO] (Hito 1) |
@@ -88,6 +88,35 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
 `127.0.0.1:8000`, arranca cuando `db` está healthy). Desde el equipo, la URL de la base usa
 `127.0.0.1` y no `localhost` (en Windows, `localhost` intenta IPv6 primero y cada conexión tardaba
 5 segundos).
+
+### Acceso remoto [DECIDIDO] (Hito 2)
+
+- **Dominio:** `puropockets.space`, registrado en Namecheap, con el DNS gestionado por Cloudflare.
+- **Subdominio del MCP:** `mcp.puropockets.space`. URL del conector de claude.ai:
+  `https://mcp.puropockets.space/mcp` (sin autenticación hasta el Hito 3).
+- **Recorrido:** Claude → Cloudflare → túnel (servicio `cloudflared` de Compose, en el homelab) →
+  `http://mcp:8000` por la red interna de Docker → servidor MCP. El homelab no abre puertos hacia
+  internet; `mcp` y `db` solo publican puertos en `127.0.0.1`.
+- **Túnel:** remotamente administrado (nombre público configurado en el panel de Cloudflare:
+  `mcp.puropockets.space` → `HTTP mcp:8000`, sin cambiar el *HTTP Host Header*). Imagen
+  `cloudflare/cloudflared:2026.10.3`, comando `tunnel --no-autoupdate --metrics 0.0.0.0:20241 run`.
+  El token se lee de `CF_TUNNEL_TOKEN` en el `.env` del homelab y llega al contenedor como
+  `TUNNEL_TOKEN`; nunca se guarda en el repositorio.
+- **Activación:** el servicio `cloudflared` tiene el perfil `tunnel`; solo arranca donde
+  `COMPOSE_PROFILES=tunnel` (el homelab). En el equipo de desarrollo no arranca.
+- **Hosts y orígenes permitidos** (protección contra DNS rebinding del SDK; `Host` inválido → 421,
+  `Origin` inválido → 403, sin `Origin` → permitido):
+  - Hosts: `127.0.0.1:*`, `localhost:*`, `[::1]:*` y el valor de `MCP_PUBLIC_HOSTNAME`
+    (`mcp.puropockets.space` y `mcp.puropockets.space:*`).
+  - Orígenes: los locales (`http://127.0.0.1:*`, etc.), `https://mcp.puropockets.space` y los de
+    `MCP_ALLOWED_ORIGINS` (documentado: `https://claude.ai,https://claude.com`).
+- **Reinicio:** `restart: unless-stopped` en `db`, `mcp` y `cloudflared`; Docker habilitado al
+  arranque del sistema en el homelab.
+- **Salud:** `db` con `pg_isready`; `mcp` con `python scripts/ping.py` dentro del contenedor;
+  `cloudflared` con `cloudflared tunnel --metrics 127.0.0.1:20241 ready` (consulta `/ready`). El túnel
+  arranca cuando `mcp` está healthy.
+- **Operación:** pasos manuales, actualización del despliegue y comprobación de salud en el README
+  ("Despliegue en el homelab").
 
 ---
 
@@ -380,3 +409,4 @@ crear cada tabla.
 | 0.1 | 2026-11-09 | Primera versión: secciones 12, 13, 15, 16 y 17 del documento de origen v0.3, stack decidido, tabla concepto → tabla y enlace a `HITOS.md`. |
 | 0.2 | 2026-11-09 | Decisiones del Hito 1 (clarificación de `specs/001-cimientos`): SDK `mcp==2.3.0` con `MCPServer`, Streamable HTTP desde el Hito 1, uv, PostgreSQL 18, alcance del CI, convención de idioma (inglés en código y base; español en documentación y mensajes), procedimiento para actualizar el SDK y medición de memoria. |
 | 0.3 | 2026-11-09 | Cierre del Hito 1: Python 3.14 y uv 0.12.5 fijados, driver psycopg 3 en modo síncrono, confirmación del SDK al implementar, medición de memoria en el equipo de desarrollo, estructura del código y servicios de Compose. |
+| 0.4 | 2026-11-09 | Hito 2: dominio `puropockets.space` y subdominio `mcp.puropockets.space`; túnel de Cloudflare como servicio de Compose (perfil `tunnel`, cloudflared 2026.10.3); hosts y orígenes públicos permitidos; reinicio automático y healthchecks. |

@@ -16,6 +16,13 @@ import sys
 from mcp import Client
 
 
+def _root_cause(exc: BaseException) -> BaseException:
+    """Desarma los ExceptionGroup de anyio para mostrar el error real."""
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
+    return exc
+
+
 def _default_url() -> str:
     return f"http://127.0.0.1:{os.environ.get('MCP_PORT', '8000')}/mcp"
 
@@ -38,7 +45,11 @@ def main() -> int:
     try:
         return asyncio.run(_run(args.url, args.times))
     except Exception as exc:  # noqa: BLE001 - mensaje claro para el usuario
-        print(f"No se pudo llamar a ping en {args.url}: {type(exc).__name__}", file=sys.stderr)
+        cause = _root_cause(exc)
+        print(
+            f"No se pudo llamar a ping en {args.url}: {type(cause).__name__}: {cause}",
+            file=sys.stderr,
+        )
         return 1
 
 

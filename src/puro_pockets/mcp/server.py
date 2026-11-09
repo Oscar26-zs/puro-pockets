@@ -11,14 +11,25 @@ from pydantic import BaseModel, Field
 from puro_pockets.config import Settings
 from puro_pockets.services.health import HealthService
 
-# Protección contra DNS rebinding: en el Hito 1 solo se acepta tráfico local.
-# (Dentro del contenedor el servidor escucha en 0.0.0.0, y el SDK solo la activa sola para
-# 127.0.0.1; por eso se configura de forma explícita.)
-LOCAL_TRANSPORT_SECURITY = TransportSecuritySettings(
-    enable_dns_rebinding_protection=True,
-    allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"],
-    allowed_origins=["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"],
-)
+# Protección contra DNS rebinding. El SDK valida Host (si no está permitido: 421) y Origin (solo si
+# viene; si no está permitido: 403). Dentro del contenedor el servidor escucha en 0.0.0.0 y el SDK
+# solo la activa por su cuenta para 127.0.0.1, así que se configura siempre de forma explícita.
+LOCAL_HOSTS = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+LOCAL_ORIGINS = ["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"]
+
+
+def build_transport_security(settings: Settings) -> TransportSecuritySettings:
+    """Hosts locales siempre; el nombre público del túnel y los orígenes extra si se configuran."""
+    hosts = list(LOCAL_HOSTS)
+    origins = list(LOCAL_ORIGINS)
+    if settings.public_hostname:
+        # cloudflared reenvía el Host público original
+        hosts += [settings.public_hostname, f"{settings.public_hostname}:*"]
+        origins.append(f"https://{settings.public_hostname}")
+    origins += list(settings.allowed_origins)
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True, allowed_hosts=hosts, allowed_origins=origins
+    )
 
 
 class PingResult(BaseModel):
@@ -48,5 +59,5 @@ def run_server(server: MCPServer, settings: Settings) -> None:
         transport="streamable-http",
         host=settings.mcp_host,
         port=settings.mcp_port,
-        transport_security=LOCAL_TRANSPORT_SECURITY,
+        transport_security=build_transport_security(settings),
     )

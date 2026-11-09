@@ -21,6 +21,8 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY src ./src
 COPY migrations ./migrations
 COPY alembic.ini ./
+# Cliente de prueba: healthcheck del servicio y ping en el homelab sin instalar uv
+COPY scripts ./scripts
 RUN uv sync --frozen --no-dev
 
 RUN useradd --create-home --uid 1000 app && chown -R app:app /app

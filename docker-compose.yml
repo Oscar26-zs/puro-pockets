@@ -3,6 +3,7 @@ name: puro-pockets
 services:
   db:
     image: postgres:18-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?Falta POSTGRES_DB en .env}
       POSTGRES_USER: ${POSTGRES_USER:?Falta POSTGRES_USER en .env}
@@ -22,16 +23,51 @@ services:
 
   mcp:
     build: .
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       DB_CONNECT_TIMEOUT: ${DB_CONNECT_TIMEOUT:-2}
       # Dentro del contenedor escucha en todas sus interfaces; Docker publica el puerto solo en 127.0.0.1
       MCP_HOST: 0.0.0.0
       MCP_PORT: "8000"
+      # Nombre público por el que llega el túnel (encabezado Host aceptado) y orígenes extra
+      MCP_PUBLIC_HOSTNAME: ${MCP_PUBLIC_HOSTNAME:-mcp.puropockets.space}
+      MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-https://claude.ai,https://claude.com}
     ports:
+      # Solo para pruebas locales. Desde internet se llega únicamente por el túnel, que alcanza
+      # este servicio por la red interna de Docker (http://mcp:8000).
       - "127.0.0.1:${MCP_PORT:-8000}:8000"
+    healthcheck:
+      # Sano = el servidor responde a un cliente MCP (llama a ping dentro del contenedor)
+      test: ["CMD", "python", "scripts/ping.py"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
     depends_on:
       db:
+        condition: service_healthy
+
+  cloudflared:
+    # Túnel de Cloudflare hacia https://mcp.puropockets.space (Hito 2).
+    # Solo arranca con el perfil "tunnel" (en el homelab: COMPOSE_PROFILES=tunnel en .env).
+    image: cloudflare/cloudflared:2026.10.3
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "--metrics", "0.0.0.0:20241", "run"]
+    environment:
+      # El token se lee de .env; nunca se escribe en este archivo ni en la línea de comandos
+      TUNNEL_TOKEN: ${CF_TUNNEL_TOKEN:-}
+    # Sin puertos publicados: solo sale hacia Cloudflare y entra a mcp por la red interna
+    healthcheck:
+      # Sano = el túnel está conectado a Cloudflare (endpoint /ready de las métricas)
+      test: ["CMD", "cloudflared", "tunnel", "--metrics", "127.0.0.1:20241", "ready"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    depends_on:
+      mcp:
         condition: service_healthy
 
 volumes:
