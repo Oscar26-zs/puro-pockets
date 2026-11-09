@@ -1,6 +1,6 @@
 # Puro Pockets: hoja de ruta por hitos
 
-**Versión:** 0.5 (borrador)
+**Versión:** 0.6 (borrador)
 **Fecha:** 2026-11-09
 **Fuentes de verdad:** reglas en `.specify/memory/constitution.md` (referenciadas como `RN-xx`); técnica en `docs/plan-tecnico.md`.
 **Este documento define:** qué entrega cada hito, en qué orden y cuándo se considera terminado. No repite reglas de negocio ni el esquema de datos: los referencia.
@@ -55,7 +55,6 @@ El **MVP usable** llega al terminar el Hito 5: puedes cargar tu saldo inicial, r
 
 | Decisión pendiente | Debe resolverse antes de | Dónde se resuelve |
 |---|---|---|
-| Servidor de autorización de OAuth (propio o externo) | Hito 3 | `/speckit-clarify` del Hito 3 |
 | #12 Detalles de monedas (tipo de cambio manual, gastos fijos en USD) | Hito 5 | Constitución, sección 14 |
 | #11 Una sola meta activa por bolsa | Hito 7 | Constitución, sección 14 |
 | Framework de la API para el dashboard | Hito 10 | `/speckit-clarify` del Hito 10 |
@@ -418,3 +417,4 @@ Cómo se generan los gastos fijos: ¿automáticamente cada mes (requiere un proc
 | 0.3 | 2026-11-09 | Las reglas sobre datos reales, capa de negocio, invariante y pruebas por hito pasan a la gobernanza de la constitución; la sección 1 conserva dos principios y enlaza a la gobernanza. Cada "Prompt para /speckit-specify" (Hitos 1 a 11) pide pruebas automáticas de forma explícita. |
 | 0.4 | 2026-11-09 | El transporte Streamable HTTP pasa del Hito 2 al Hito 1 (clarificación de la spec `001-cimientos`); en el Hito 2 se expone por el túnel. |
 | 0.5 | 2026-11-09 | Se quita el SDK de MCP de las decisiones pendientes (decidido: `mcp==2.3.0` con `MCPServer`). El "Terminado cuando" del Hito 1 precisa que en GitHub Actions corren ruff y las pruebas unitarias, y las de integración en el equipo de desarrollo. |
+| 0.6 | 2026-11-09 | Se quita de la sección 3 la decisión del servidor de autorización de OAuth (decidido en el Hito 3: propio y mínimo, para un único usuario; registrado en `docs/plan-tecnico.md`). |

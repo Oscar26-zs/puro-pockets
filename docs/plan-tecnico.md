@@ -1,6 +1,6 @@
 # Plan técnico de Puro Pockets
 
-**Versión:** 0.4
+**Versión:** 0.5
 **Fecha:** 2026-11-09
 **Capa:** 2 en la gobernanza de `.specify/memory/constitution.md`. Decide la técnica; si contradice a
 la constitución, gana la constitución y se corrige este documento.
@@ -29,8 +29,8 @@ esquema o la arquitectura.
 | SDK de MCP | `mcp==2.3.0` (versión exacta); servidor con `MCPServer` importada desde `mcp.server.mcpserver`. Verificado el 2026-11-09 en PyPI y en la guía oficial de migración v1 → v2, y confirmado al implementar el Hito 1 (prueba de humo `tests/unit/test_sdk_import.py`). Protección contra DNS rebinding configurada de forma explícita para hosts locales. | [DECIDIDO] (Hito 1) |
 | Verificación automática (CI) | En cada push a GitHub: ruff y pruebas unitarias. Las pruebas de integración corren en local. | [DECIDIDO] (Hito 1) |
 | Publicación | Túnel con nombre de Cloudflare (remotamente administrado), contenedor `cloudflare/cloudflared:2026.10.3`, hacia `https://mcp.puropockets.space` (ver "Acceso remoto") | [DECIDIDO] (decisión 9, Hito 2) |
-| Autenticación del MCP | OAuth (el MCP actúa como servidor de recursos) | [DECIDIDO] |
-| Servidor de autorización de OAuth | Propio o externo | [ABIERTO]: se resuelve en el Hito 3 |
+| Autenticación del MCP | OAuth 2.1: el MCP es servidor de recursos y también servidor de autorización (ver "Autenticación OAuth") | [DECIDIDO] (Hito 3) |
+| Servidor de autorización de OAuth | Propio y mínimo, para un único usuario, sobre el módulo de autenticación del SDK `mcp==2.3.0`; contraseña con argon2 (`argon2-cffi`) | [DECIDIDO] (Hito 3) |
 | Pruebas y estilo | pytest y ruff; CI en GitHub Actions | [DECIDIDO] (Hito 1) |
 | Dashboard | React + Vite + TypeScript + Tailwind, con una librería de gráficos | [PROPUESTO] (sección 16) |
 | API del dashboard | Framework por decidir | [ABIERTO]: se resuelve en el Hito 10 |
@@ -118,6 +118,44 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
 - **Operación:** pasos manuales, actualización del despliegue y comprobación de salud en el README
   ("Despliegue en el homelab").
 
+
+### Autenticación OAuth [DECIDIDO] (Hito 3)
+
+- **Servidor de autorización:** propio y mínimo, para un único usuario (el propietario), dentro del
+  mismo servidor MCP. El SDK aporta los endpoints, PKCE S256 y la validación Bearer; el proyecto aporta
+  el proveedor (`services/oauth.py`), el almacén SQL (`db/oauth_store.py`) y la página de inicio de
+  sesión (`mcp/login.py`).
+- **Endpoints** (emisor `https://mcp.puropockets.space`): `/authorize`, `/token`, `/revoke`,
+  `/register` (solo con el registro abierto), `/login`, `/.well-known/oauth-authorization-server`
+  (RFC 8414) y `/.well-known/oauth-protected-resource/mcp` (RFC 9728, recurso
+  `https://mcp.puropockets.space/mcp`). Sin token, `/mcp` responde 401 con
+  `WWW-Authenticate: Bearer ..., resource_metadata="…"`.
+- **Clientes:** registro dinámico (RFC 7591) cerrado por defecto (`OAUTH_REGISTRATION_ENABLED`); solo
+  clientes públicos (sin secreto), solo URL de retorno de `OAUTH_ALLOWED_REDIRECT_URIS`
+  (`https://claude.ai/api/mcp/auth_callback`, `https://claude.com/api/mcp/auth_callback`), máximo
+  `OAUTH_MAX_CLIENTS` (10) y 5 registros por hora. Alternativa: cliente propio con
+  `scripts/register_client.py`. Claude Code (redirecciones locales) queda fuera.
+- **Duraciones** (configurables): acceso 1 hora, refresco 30 días con rotación, código 5 minutos de un
+  solo uso. Reutilizar un refresco ya rotado revoca toda su cadena. `OAUTH_SHORT_LIFETIMES=true`:
+  acceso 2 minutos y refresco 15 minutos, solo para pruebas.
+- **Scopes:** `mcp` (requerido) y `offline_access` (anunciado, para que Claude pida refresco). Los
+  tokens se ligan al recurso y se rechazan los de otro recurso (`validate_token_resource=True`).
+- **Almacenamiento** (migración `0002_oauth`): `oauth_clients`, `oauth_authorization_codes`,
+  `oauth_access_tokens`, `oauth_refresh_tokens`. Solo hashes SHA-256 de códigos y tokens (tokens
+  opacos de 256 bits con prefijo `ppc_`, `ppa_`, `ppr_`).
+- **Contraseña:** hash argon2id en `OWNER_PASSWORD_HASH` (entre comillas simples en `.env`), generado
+  con `scripts/hash_password.py`; los parámetros viajan dentro del hash y se ajustan para que la
+  verificación tarde menos de 1 segundo en el homelab (`--benchmark`). Sin hash válido, el inicio de
+  sesión queda deshabilitado.
+- **Límite de intentos (solo inicio de sesión):** 5 fallos por IP (`CF-Connecting-IP`) en 15 minutos
+  bloquean esa IP; 20 fallos globales en 15 minutos bloquean el inicio de sesión 5 minutos. Nunca
+  afecta a `/mcp` con token válido.
+- **Revocación:** endpoint `/revoke` (RFC 7009) y `scripts/revoke_tokens.py --yes` (todo).
+- **Registros:** sin contraseñas, hashes, códigos ni tokens; se registran el dominio de retorno, los
+  registros de clientes, los inicios de sesión, los refrescos, las reutilizaciones y las revocaciones.
+- **Observaciones del SDK:** el endpoint `/revoke` exige `client_secret` aunque sea vacío para clientes
+  públicos (defecto de `RevocationRequest`); se deja documentado y cubierto por una prueba que avisará
+  cuando se corrija. La comparación de PKCE y los metadatos `client_secret_*` se dejan como están.
 ---
 
 ## 12. Integración con Claude (MCP)
@@ -410,3 +448,4 @@ crear cada tabla.
 | 0.2 | 2026-11-09 | Decisiones del Hito 1 (clarificación de `specs/001-cimientos`): SDK `mcp==2.3.0` con `MCPServer`, Streamable HTTP desde el Hito 1, uv, PostgreSQL 18, alcance del CI, convención de idioma (inglés en código y base; español en documentación y mensajes), procedimiento para actualizar el SDK y medición de memoria. |
 | 0.3 | 2026-11-09 | Cierre del Hito 1: Python 3.14 y uv 0.12.5 fijados, driver psycopg 3 en modo síncrono, confirmación del SDK al implementar, medición de memoria en el equipo de desarrollo, estructura del código y servicios de Compose. |
 | 0.4 | 2026-11-09 | Hito 2: dominio `puropockets.space` y subdominio `mcp.puropockets.space`; túnel de Cloudflare como servicio de Compose (perfil `tunnel`, cloudflared 2026.10.3); hosts y orígenes públicos permitidos; reinicio automático y healthchecks. |
+| 0.5 | 2026-11-09 | Hito 3: servidor de autorización OAuth propio (decisión pendiente resuelta), endpoints, clientes, duraciones, scopes, tablas `0002_oauth`, argon2, límite de intentos y revocación. |
