@@ -1,6 +1,6 @@
 # Plan técnico de Puro Pockets
 
-**Versión:** 0.1
+**Versión:** 0.2
 **Fecha:** 2026-11-09
 **Capa:** 2 en la gobernanza de `.specify/memory/constitution.md`. Decide la técnica; si contradice a
 la constitución, gana la constitución y se corrige este documento.
@@ -21,19 +21,51 @@ esquema o la arquitectura.
 | Área | Elección | Estado |
 |---|---|---|
 | Lenguaje | Python (3.12 o superior) | [DECIDIDO] (decisión 10) |
-| Gestor de entornos y dependencias | uv | [PROPUESTO] |
-| Base de datos | PostgreSQL en Docker (Docker Compose), con volumen persistente y puerto atado a `127.0.0.1` | [DECIDIDO] |
+| Gestor de entornos y dependencias | uv, con dependencias fijadas en `uv.lock` | [DECIDIDO] (Hito 1) |
+| Base de datos | PostgreSQL **18** en Docker (Docker Compose), imagen `postgres:18-alpine` (nunca `latest`), con volumen persistente y puerto atado a `127.0.0.1` | [DECIDIDO] (Hito 1) |
 | Acceso a datos | SQLAlchemy | [DECIDIDO] |
 | Migraciones | Alembic | [DECIDIDO] |
-| Servidor MCP | Remoto por HTTPS (transporte Streamable HTTP) | [DECIDIDO] (decisión 9) |
-| SDK de MCP | Biblioteca y versión por fijar | [ABIERTO]: se resuelve en el Hito 1 |
+| Servidor MCP | Transporte Streamable HTTP desde el Hito 1, publicado solo en `127.0.0.1`; remoto por HTTPS desde el Hito 2 | [DECIDIDO] (decisión 9, Hito 1) |
+| SDK de MCP | `mcp==2.3.0` (versión exacta); servidor con `MCPServer` importada desde `mcp.server.mcpserver`. Verificado el 2026-11-09 en PyPI y en la guía oficial de migración v1 → v2. | [DECIDIDO] (Hito 1) |
+| Verificación automática (CI) | En cada push a GitHub: ruff y pruebas unitarias. Las pruebas de integración corren en local. | [DECIDIDO] (Hito 1) |
 | Publicación | Túnel con nombre de Cloudflare hacia un subdominio fijo | [DECIDIDO] (decisión 9) |
 | Autenticación del MCP | OAuth (el MCP actúa como servidor de recursos) | [DECIDIDO] |
 | Servidor de autorización de OAuth | Propio o externo | [ABIERTO]: se resuelve en el Hito 3 |
-| Pruebas y estilo | pytest y ruff; CI en GitHub Actions | Definido en `HITOS.md` (Hito 1) |
+| Pruebas y estilo | pytest y ruff; CI en GitHub Actions | [DECIDIDO] (Hito 1) |
 | Dashboard | React + Vite + TypeScript + Tailwind, con una librería de gráficos | [PROPUESTO] (sección 16) |
 | API del dashboard | Framework por decidir | [ABIERTO]: se resuelve en el Hito 10 |
 | Ejecución | Homelab del propietario | [DECIDIDO] |
+
+### Convención de idioma [DECIDIDO] (Hito 1)
+
+- **En inglés:** nombres de código (módulos, clases, funciones, variables), tablas, columnas y tools
+  MCP.
+- **En español:** documentación y mensajes que ve el usuario (incluidos los mensajes de error que
+  devuelven las tools).
+- El esquema de referencia de la sección 17 y la tabla concepto → tabla todavía usan nombres del
+  borrador en español; se pasan al inglés antes de crear cada tabla.
+
+### Actualizar el SDK de MCP
+
+Actualizar el SDK es una decisión deliberada, nunca automática:
+
+1. Cambiar el número de versión de `mcp` en `pyproject.toml` y regenerar `uv.lock`.
+2. Correr todas las pruebas (unitarias, de integración y la prueba de humo que importa `MCPServer`
+   desde `mcp.server.mcpserver`).
+3. Anotar en este documento la nueva versión, la fecha de verificación y la ruta de importación.
+
+### Medición de memoria
+
+- **Cuándo:** con los servicios `db` y `mcp` recién levantados y estabilizados (en reposo), y otra
+  vez después de 20 llamadas a `ping`.
+- **Cómo:** `docker stats --no-stream`, tomando la columna de uso de memoria de cada servicio.
+- **Dónde:** en la tabla siguiente, con fecha y equipo. La medición en el homelab se agrega en el
+  Hito 2.
+
+| Fecha | Equipo | Servicio | En reposo | Tras 20 `ping` |
+|---|---|---|---|---|
+| Pendiente (Hito 1) | Equipo de desarrollo | `db` | — | — |
+| Pendiente (Hito 1) | Equipo de desarrollo | `mcp` | — | — |
 
 ---
 
@@ -313,9 +345,9 @@ esquema de la sección 17, con los valores que se guardan para estados, tipos y 
 | Estado del mes (RN-49) | `month_closures.estado` | `abierto`, `cerrado` |
 | Ajustes de cierre (RN-50, 10.2) | `closure_adjustments.tipo` | `sobrante_no_destinado`, `sobregasto_no_cubierto` |
 
-**Idioma de los nombres:** el idioma de los nombres de tablas, columnas y código se decide en el
-Hito 1 y se anota aquí. Los nombres de esta tabla y de la sección 17 son los del borrador de
-referencia.
+**Idioma de los nombres:** decidido en el Hito 1: inglés (ver "Convención de idioma"). Los nombres
+de esta tabla y de la sección 17 son los del borrador de referencia y se pasan al inglés antes de
+crear cada tabla.
 
 ---
 
@@ -324,3 +356,4 @@ referencia.
 | Versión | Fecha | Cambio |
 |---|---|---|
 | 0.1 | 2026-11-09 | Primera versión: secciones 12, 13, 15, 16 y 17 del documento de origen v0.3, stack decidido, tabla concepto → tabla y enlace a `HITOS.md`. |
+| 0.2 | 2026-11-09 | Decisiones del Hito 1 (clarificación de `specs/001-cimientos`): SDK `mcp==2.3.0` con `MCPServer`, Streamable HTTP desde el Hito 1, uv, PostgreSQL 18, alcance del CI, convención de idioma (inglés en código y base; español en documentación y mensajes), procedimiento para actualizar el SDK y medición de memoria. |

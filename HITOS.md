@@ -1,6 +1,6 @@
 # Puro Pockets: hoja de ruta por hitos
 
-**Versión:** 0.3 (borrador)
+**Versión:** 0.4 (borrador)
 **Fecha:** 2026-11-09
 **Fuentes de verdad:** reglas en `.specify/memory/constitution.md` (referenciadas como `RN-xx`); técnica en `docs/plan-tecnico.md`.
 **Este documento define:** qué entrega cada hito, en qué orden y cuándo se considera terminado. No repite reglas de negocio ni el esquema de datos: los referencia.
@@ -145,6 +145,7 @@ tests/
 - **Dockerfile** del servidor MCP.
 - **Alembic** inicializado, con una primera migración base.
 - **Tool `ping`** que confirma que el servidor está vivo y que la base responde.
+- **Transporte Streamable HTTP** del servidor MCP, publicado solo en `127.0.0.1` (en el Hito 2 se expone por el túnel).
 - **Calidad:** `pytest` (una prueba unitaria y una de integración), `ruff` para estilo.
 - **CI básico en GitHub Actions:** `ruff` y pruebas unitarias en cada push.
 - **Convención de idioma** de tablas y código, decidida y escrita en el plan técnico.
@@ -169,7 +170,6 @@ tests/
 ### Entregables
 - **Dominio:** DNS gestionado por Cloudflare (nameservers cambiados en Namecheap, con los registros existentes copiados y DNSSEC revisado).
 - **Túnel con nombre** de Cloudflare hacia un subdominio fijo (`mcp.tudominio.com`), corriendo como contenedor en el Compose.
-- **Transporte HTTP** del servidor MCP (Streamable HTTP).
 - **Despliegue en el homelab:** instalar Docker en el homelab, clonar el repo, crear `.env` real, `docker compose up -d`, política `restart: unless-stopped`.
 - **Conector personalizado** agregado en claude.ai (Customize → Connectors).
 - **Procedimiento de actualización** documentado: cómo traer cambios del repo y reiniciar.
@@ -417,3 +417,4 @@ Cómo se generan los gastos fijos: ¿automáticamente cada mes (requiere un proc
 | 0.1 | 2026-11-09 | Primera versión: 12 hitos (0 a 11), con acceso remoto y autenticación antes que cualquier dato real. |
 | 0.2 | 2026-11-09 | Porcentajes iniciales con nombres explícitos (Necesidades 50 %, Ahorro 30 %, Gustos 20 %) en los Hitos 4 y 5. Verificación de memoria con `docker stats` en el Hito 1. Referencias a `CONSTITUCION.md` corregidas a `docs/origen/CONSTITUCION-origen.md` (archivado). La sección 13 se cita en el plan técnico; la sección 14 queda en la constitución. |
 | 0.3 | 2026-11-09 | Las reglas sobre datos reales, capa de negocio, invariante y pruebas por hito pasan a la gobernanza de la constitución; la sección 1 conserva dos principios y enlaza a la gobernanza. Cada "Prompt para /speckit-specify" (Hitos 1 a 11) pide pruebas automáticas de forma explícita. |
+| 0.4 | 2026-11-09 | El transporte Streamable HTTP pasa del Hito 2 al Hito 1 (clarificación de la spec `001-cimientos`); en el Hito 2 se expone por el túnel. |
