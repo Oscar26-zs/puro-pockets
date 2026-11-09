@@ -104,7 +104,7 @@ documentación en español (FR-016).
 
 **Independent Test**: seguir el README en un clon limpio hasta obtener `database: ok`.
 
-- [ ] T027 [US3] Reescribir `README.md` en español: qué es, requisitos (Docker con Compose, uv), configuración (`copy .env.example .env` y cambiar la contraseña), arranque, migraciones (subir y bajar), llamada a `ping`, pruebas (`pytest`, `pytest -m "not integration"`, `ruff`), detener y borrar datos (`docker compose down -v`, con advertencia), cómo actualizar el SDK de MCP (remite a `docs/plan-tecnico.md`) (FR-014, FR-020)
+- [X] T027 [US3] Reescribir `README.md` en español: qué es, requisitos (Docker con Compose, uv), configuración (`copy .env.example .env` y cambiar la contraseña), arranque, migraciones (subir y bajar), llamada a `ping`, pruebas (`pytest`, `pytest -m "not integration"`, `ruff`), detener y borrar datos (`docker compose down -v`, con advertencia), cómo actualizar el SDK de MCP (remite a `docs/plan-tecnico.md`) (FR-014, FR-020)
 
 ---
 
