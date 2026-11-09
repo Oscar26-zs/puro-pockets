@@ -114,13 +114,13 @@ documentación en español (FR-016).
 
 **Independent Test**: la tabla "Medición de memoria" de `docs/plan-tecnico.md` tiene valores de `db` y `mcp` en reposo y tras 20 `ping`.
 
-- [ ] T028 [US4] Medir con `docker stats --no-stream` unos 60 s después de levantar y otra vez tras `uv run python scripts/ping.py --times 20`; registrar fecha, equipo y valores en la tabla "Medición de memoria" de `docs/plan-tecnico.md` (FR-015, SC-007)
+- [X] T028 [US4] Medir con `docker stats --no-stream` unos 60 s después de levantar y otra vez tras `uv run python scripts/ping.py --times 20`; registrar fecha, equipo y valores en la tabla "Medición de memoria" de `docs/plan-tecnico.md` (FR-015, SC-007)
 
 ---
 
 ## Phase 7: Polish & Cross-Cutting Concerns
 
-- [ ] T029 Actualizar `docs/plan-tecnico.md` al cerrar el hito: driver psycopg 3, imagen `python:3.14-slim` y versión de uv fijada en el stack; estructura en capas real; confirmar versión, fecha de verificación y ruta de importación del SDK (FR-019); registro de cambios
+- [X] T029 Actualizar `docs/plan-tecnico.md` al cerrar el hito: driver psycopg 3, imagen `python:3.14-slim` y versión de uv fijada en el stack; estructura en capas real; confirmar versión, fecha de verificación y ruta de importación del SDK (FR-019); registro de cambios
 - [ ] T030 Crear `specs/001-cimientos/verificacion.md` a partir de `quickstart.md`: cada paso con comandos, resultado esperado y quién lo verificó (Claude o el propietario)
 - [ ] T031 Validación final: `docker compose down -v` y arranque desde cero, migraciones, `ping`, `uv run pytest` completo, `ruff`, `git check-ignore .env`, puertos publicados en `127.0.0.1`
 
