@@ -1,6 +1,6 @@
 # Puro Pockets: hoja de ruta por hitos
 
-**Versión:** 0.2 (borrador)
+**Versión:** 0.3 (borrador)
 **Fecha:** 2026-11-09
 **Fuentes de verdad:** reglas en `.specify/memory/constitution.md` (referenciadas como `RN-xx`); técnica en `docs/plan-tecnico.md`.
 **Este documento define:** qué entrega cada hito, en qué orden y cuándo se considera terminado. No repite reglas de negocio ni el esquema de datos: los referencia.
@@ -24,10 +24,9 @@ Por cada hito:
 
 ### Principios de la hoja de ruta
 1. Cada hito termina en algo **demostrable** (desde terminal o desde Claude).
-2. **Ningún dato financiero real antes del hito de autenticación (Hito 3).**
-3. Lo más incierto se valida **temprano** (acceso remoto y OAuth antes que las reglas de dinero).
-4. La lógica de negocio vive en una capa propia, sin depender de MCP ni de la base de datos, para que las tools y el dashboard compartan el mismo código y las reglas se puedan probar aisladas.
-5. Cada hito agrega sus propias pruebas automáticas. El invariante de integridad (constitución, sección 11.4) se prueba desde el Hito 5 en adelante.
+2. Lo más incierto se valida **temprano** (acceso remoto y OAuth antes que las reglas de dinero).
+
+Las reglas no negociables (datos reales, capa de negocio, invariante de integridad y pruebas por hito) están en la sección **Gobernanza** de `.specify/memory/constitution.md`.
 
 ---
 
@@ -151,7 +150,7 @@ tests/
 - **Convención de idioma** de tablas y código, decidida y escrita en el plan técnico.
 
 ### Prompt para /speckit-specify
-> El propietario necesita un proyecto base que le permita levantar con un solo comando el servidor MCP y la base de datos en su equipo, correr migraciones y comprobar desde un cliente MCP que una tool `ping` responde indicando que el servidor y la base de datos están operativos. Debe incluir pruebas automáticas y una verificación de estilo en cada push.
+> El propietario necesita un proyecto base que le permita levantar con un solo comando el servidor MCP y la base de datos en su equipo, correr migraciones y comprobar desde un cliente MCP que una tool `ping` responde indicando que el servidor y la base de datos están operativos. Debe incluir pruebas automáticas y una verificación de estilo en cada push. Incluye pruebas automáticas que verifiquen los criterios de aceptación.
 
 ### Terminado cuando
 - `docker compose up` levanta la base y el MCP sin errores.
@@ -176,7 +175,7 @@ tests/
 - **Procedimiento de actualización** documentado: cómo traer cambios del repo y reiniciar.
 
 ### Prompt para /speckit-specify
-> El propietario quiere llamar a la tool `ping` de su servidor MCP desde Claude en el navegador y en el celular, estando fuera de su casa. El servidor corre en su homelab y se publica en una URL HTTPS fija con su propio dominio. En este hito no se maneja información financiera.
+> El propietario quiere llamar a la tool `ping` de su servidor MCP desde Claude en el navegador y en el celular, estando fuera de su casa. El servidor corre en su homelab y se publica en una URL HTTPS fija con su propio dominio. En este hito no se maneja información financiera. Incluye pruebas automáticas que verifiquen los criterios de aceptación.
 
 ### Riesgos y mitigaciones
 - El endpoint queda público sin autenticación: solo expone `ping`, sin datos. Si prefieres, apaga el túnel entre sesiones de prueba.
@@ -206,7 +205,7 @@ El SDK de MCP para Python implementa el lado del **servidor de recursos** de OAu
 - **Gestión de secretos:** contraseña y claves fuera del repo, rotables.
 
 ### Prompt para /speckit-specify
-> El propietario necesita que solo él pueda invocar las tools del servidor MCP. Al agregar el conector en Claude debe aparecer un inicio de sesión; sin sesión válida, las llamadas deben rechazarse. Debe poder desconectar y reconectar el conector, y revocar el acceso si lo necesita.
+> El propietario necesita que solo él pueda invocar las tools del servidor MCP. Al agregar el conector en Claude debe aparecer un inicio de sesión; sin sesión válida, las llamadas deben rechazarse. Debe poder desconectar y reconectar el conector, y revocar el acceso si lo necesita. Incluye pruebas automáticas que verifiquen los criterios de aceptación.
 
 ### Terminado cuando
 - Una llamada a `/mcp` sin token recibe 401.
@@ -229,7 +228,7 @@ El SDK de MCP para Python implementa el lado del **servidor de recursos** de OAu
 - **Saldo inicial** (RN-54): una sola vez, por montos explícitos, que no cuenta como ingreso del mes.
 
 ### Prompt para /speckit-specify
-> El propietario quiere definir sus bolsas de dinero (Necesidades, Gustos y Ahorro) y los porcentajes en que se reparte su ingreso cada mes, y cargar una vez el saldo con el que arranca, repartido por montos entre las bolsas. Los porcentajes deben sumar 100, quedar guardados por mes y poder cambiarse sin alterar meses anteriores.
+> El propietario quiere definir sus bolsas de dinero (Necesidades, Gustos y Ahorro) y los porcentajes en que se reparte su ingreso cada mes, y cargar una vez el saldo con el que arranca, repartido por montos entre las bolsas. Los porcentajes deben sumar 100, quedar guardados por mes y poder cambiarse sin alterar meses anteriores. Incluye pruebas automáticas que verifiquen los criterios de aceptación.
 
 ### Terminado cuando
 - Desde Claude defines Necesidades 50 %, Ahorro 30 % y Gustos 20 % para un mes, y la app rechaza una suma distinta de 100.
@@ -256,7 +255,7 @@ El SDK de MCP para Python implementa el lado del **servidor de recursos** de OAu
 - **Idempotencia** en las tools que escriben (clave de operación).
 
 ### Prompt para /speckit-specify
-> El propietario quiere registrar desde Claude su salario y sus gastos, en colones o dólares. El salario que entra a fin de mes se reparte entre las bolsas según los porcentajes del mes siguiente. Quiere ver cuánto lleva gastado y cuánto le queda en cada bolsa, ver en qué gasta más, y anular un movimiento mal registrado dejando constancia. Un gasto que excede una bolsa se registra igual y avisa.
+> El propietario quiere registrar desde Claude su salario y sus gastos, en colones o dólares. El salario que entra a fin de mes se reparte entre las bolsas según los porcentajes del mes siguiente. Quiere ver cuánto lleva gastado y cuánto le queda en cada bolsa, ver en qué gasta más, y anular un movimiento mal registrado dejando constancia. Un gasto que excede una bolsa se registra igual y avisa. Incluye pruebas automáticas que verifiquen los criterios de aceptación.
 
 ### Terminado cuando
 - Desde Claude: registras un salario y se reparte Necesidades 50 %, Ahorro 30 % y Gustos 20 % en el mes siguiente.
@@ -284,7 +283,7 @@ El SDK de MCP para Python implementa el lado del **servidor de recursos** de OAu
 Cómo se generan los gastos fijos: ¿automáticamente cada mes (requiere un proceso programado) o bajo demanda, cuando Claude detecta que faltan? Recomendación: bajo demanda, que evita sumar un proceso programado al homelab.
 
 ### Prompt para /speckit-specify
-> El propietario quiere registrar ingresos extra y que, en cada uno, Claude le proponga cómo repartirlo entre las bolsas según la situación del mes, para él confirmar o ajustar antes de guardar. También quiere registrar sus gastos fijos mensuales y saber cuáles ya pagó y cuáles faltan.
+> El propietario quiere registrar ingresos extra y que, en cada uno, Claude le proponga cómo repartirlo entre las bolsas según la situación del mes, para él confirmar o ajustar antes de guardar. También quiere registrar sus gastos fijos mensuales y saber cuáles ya pagó y cuáles faltan. Incluye pruebas automáticas que verifiquen los criterios de aceptación.
 
 ### Terminado cuando
 - Registras un extra: queda pendiente y visible como "sin asignar".
@@ -307,7 +306,7 @@ Cómo se generan los gastos fijos: ¿automáticamente cada mes (requiere un proc
 - **Tools:** `preview_rebalance`, `create_bolsa`, `archive_bolsa`, `create_goal`, `get_goal_progress`, `update_goal`.
 
 ### Prompt para /speckit-specify
-> El propietario quiere crear bolsas nuevas (por ejemplo Emergencia o Viaje), y que al crearlas se le muestre cómo cambiarían los porcentajes para aprobarlos. Quiere definir metas de ahorro, como un viaje de ₡500.000 sin fecha obligatoria, ligadas a una bolsa de ahorro, y ver su avance según el saldo de esa bolsa.
+> El propietario quiere crear bolsas nuevas (por ejemplo Emergencia o Viaje), y que al crearlas se le muestre cómo cambiarían los porcentajes para aprobarlos. Quiere definir metas de ahorro, como un viaje de ₡500.000 sin fecha obligatoria, ligadas a una bolsa de ahorro, y ver su avance según el saldo de esa bolsa. Incluye pruebas automáticas que verifiquen los criterios de aceptación.
 
 ### Terminado cuando
 - Creas la bolsa Emergencia: la vista previa muestra el reajuste, al confirmar los porcentajes suman 100 y aplican desde el mes siguiente.
@@ -330,7 +329,7 @@ Cómo se generan los gastos fijos: ¿automáticamente cada mes (requiere un proc
 - **Tools:** `preview_transfer`, `transfer_between_bolsas`.
 
 ### Prompt para /speckit-specify
-> El propietario quiere mover dinero de una bolsa a otra, por ejemplo para cubrir un gasto que excedió Gustos, viendo antes cómo quedarían ambas bolsas y qué efecto tendría sobre su meta de ahorro. Cada movimiento debe quedar registrado y no poder editarse ni borrarse.
+> El propietario quiere mover dinero de una bolsa a otra, por ejemplo para cubrir un gasto que excedió Gustos, viendo antes cómo quedarían ambas bolsas y qué efecto tendría sobre su meta de ahorro. Cada movimiento debe quedar registrado y no poder editarse ni borrarse. Incluye pruebas automáticas que verifiquen los criterios de aceptación.
 
 ### Terminado cuando
 - Gustos queda en negativo, y con una transferencia desde Necesidades vuelve a cero, con el movimiento en el historial.
@@ -354,7 +353,7 @@ Cómo se generan los gastos fijos: ¿automáticamente cada mes (requiere un proc
 - **Ritual de fin de mes** documentado en un solo flujo (RN-51).
 
 ### Prompt para /speckit-specify
-> A fin de mes, el propietario quiere ver los déficits y sobrantes de sus bolsas de consumo, recibir una propuesta de cómo cubrir déficits y a dónde enviar los sobrantes, confirmarla o cambiarla, y cerrar el mes de forma que lo cerrado no pueda modificarse. Las bolsas de consumo empiezan el mes siguiente en cero.
+> A fin de mes, el propietario quiere ver los déficits y sobrantes de sus bolsas de consumo, recibir una propuesta de cómo cubrir déficits y a dónde enviar los sobrantes, confirmarla o cambiarla, y cerrar el mes de forma que lo cerrado no pueda modificarse. Las bolsas de consumo empiezan el mes siguiente en cero. Incluye pruebas automáticas que verifiquen los criterios de aceptación.
 
 ### Terminado cuando
 - Un mes con un déficit y un sobrante se cierra, y el sobrante cubre el déficit.
@@ -378,7 +377,7 @@ Cómo se generan los gastos fijos: ¿automáticamente cada mes (requiere un proc
 - **Autenticación propia del dashboard.**
 
 ### Prompt para /speckit-specify
-> El propietario quiere consultar en una página web privada cuánto ingresó, cuánto gastó y cuánto le queda por bolsa, en qué categorías gasta más, cómo evolucionan sus meses y cómo van sus metas de ahorro. Los datos deben coincidir exactamente con los que le reporta Claude.
+> El propietario quiere consultar en una página web privada cuánto ingresó, cuánto gastó y cuánto le queda por bolsa, en qué categorías gasta más, cómo evolucionan sus meses y cómo van sus metas de ahorro. Los datos deben coincidir exactamente con los que le reporta Claude. Incluye pruebas automáticas que verifiquen los criterios de aceptación.
 
 ### Terminado cuando
 - Los totales del dashboard coinciden con `get_summary` para el mismo mes.
@@ -402,7 +401,7 @@ Cómo se generan los gastos fijos: ¿automáticamente cada mes (requiere un proc
 - **Documentación final:** README completo y guía de recuperación ante desastres.
 
 ### Prompt para /speckit-specify
-> El propietario quiere tener la seguridad de que sus datos financieros no se pierdan y de que el sistema se pueda recuperar. Necesita respaldos automáticos, una restauración comprobada, avisos si el servicio falla y un procedimiento claro para actualizar y recuperar el sistema.
+> El propietario quiere tener la seguridad de que sus datos financieros no se pierdan y de que el sistema se pueda recuperar. Necesita respaldos automáticos, una restauración comprobada, avisos si el servicio falla y un procedimiento claro para actualizar y recuperar el sistema. Incluye pruebas automáticas que verifiquen los criterios de aceptación.
 
 ### Terminado cuando
 - Se hizo una restauración real desde un respaldo y los saldos y el invariante coinciden.
@@ -417,3 +416,4 @@ Cómo se generan los gastos fijos: ¿automáticamente cada mes (requiere un proc
 |---|---|---|
 | 0.1 | 2026-11-09 | Primera versión: 12 hitos (0 a 11), con acceso remoto y autenticación antes que cualquier dato real. |
 | 0.2 | 2026-11-09 | Porcentajes iniciales con nombres explícitos (Necesidades 50 %, Ahorro 30 %, Gustos 20 %) en los Hitos 4 y 5. Verificación de memoria con `docker stats` en el Hito 1. Referencias a `CONSTITUCION.md` corregidas a `docs/origen/CONSTITUCION-origen.md` (archivado). La sección 13 se cita en el plan técnico; la sección 14 queda en la constitución. |
+| 0.3 | 2026-11-09 | Las reglas sobre datos reales, capa de negocio, invariante y pruebas por hito pasan a la gobernanza de la constitución; la sección 1 conserva dos principios y enlaza a la gobernanza. Cada "Prompt para /speckit-specify" (Hitos 1 a 11) pide pruebas automáticas de forma explícita. |
