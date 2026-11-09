@@ -7,7 +7,9 @@ hashes), quién puede registrarse, cuánto duran los tokens y cómo se rotan y r
 from __future__ import annotations
 
 import logging
+import os
 import secrets
+import socket
 import time
 import uuid
 from collections.abc import Callable
@@ -40,6 +42,8 @@ SCOPE_OFFLINE = "offline_access"
 VALID_SCOPES = [SCOPE_MCP, SCOPE_OFFLINE]
 OWNER_SUBJECT = "owner"
 PENDING_TTL_SECONDS = 600  # tiempo para completar el inicio de sesión
+# Identifica este proceso en los registros (contenedor + arranque), para detectar réplicas
+SERVER_INSTANCE = f"{socket.gethostname()}:{os.getpid()}:{int(time.time())}"
 
 
 @dataclass(frozen=True)
@@ -195,6 +199,15 @@ class OwnerOAuthProvider:
             scopes=tuple(params.scopes or VALID_SCOPES),
             created_at=self.clock(),
         )
+        logger.info(
+            "Solicitud de inicio de sesión creada: solicitud=%s client_id=%s retorno=%s "
+            "pendientes=%d servidor=%s",
+            request_id[:6],
+            client.client_id[:8],
+            redirect_domain(redirect),
+            len(self._pending),
+            SERVER_INSTANCE,
+        )
         return f"{self.config.issuer_url}{self.config.login_path}?request={request_id}"
 
     def _purge_pending(self) -> None:
@@ -204,7 +217,18 @@ class OwnerOAuthProvider:
 
     def get_pending(self, request_id: str) -> PendingAuthorization | None:
         self._purge_pending()
-        return self._pending.get(request_id)
+        pending = self._pending.get(request_id)
+        if pending is None:
+            # Causas posibles: más de 10 minutos, reinicio del servidor (las solicitudes viven en
+            # memoria) u otra réplica del túnel. `servidor` identifica el proceso que respondió.
+            logger.info(
+                "Solicitud de inicio de sesión no encontrada: solicitud=%s pendientes=%d "
+                "servidor=%s",
+                request_id[:6] or "-",
+                len(self._pending),
+                SERVER_INSTANCE,
+            )
+        return pending
 
     async def complete_authorization(self, request_id: str) -> str:
         """Tras un inicio de sesión correcto: emite el código y devuelve la URL de retorno."""

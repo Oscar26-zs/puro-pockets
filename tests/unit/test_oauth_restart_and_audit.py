@@ -157,3 +157,22 @@ def test_flujo_completo_tras_reinicio_con_token_y_refresco():
         )
         assert refreshed.status_code == 200, refreshed.text
         assert _mcp(http, refreshed.json()["access_token"]).status_code == 200
+
+
+def test_reinicio_entre_authorize_y_login_da_solicitud_vencida_y_queda_registrado(caplog):
+    """Las solicitudes viven en memoria: un reinicio (u otra réplica) las pierde."""
+    caplog.set_level(logging.INFO, logger="puro_pockets.auth")
+    store = InMemoryOAuthStore()
+    with _make_client(store=store) as http:
+        client_id = _register(http).json()["client_id"]
+        _, challenge = _pkce()
+        login_url = _authorize(http, client_id, challenge).headers["location"]
+    request_id = parse_qs(urlsplit(login_url).query)["request"][0]
+    with _make_client(store=store) as http:  # otro proceso
+        response = _login(http, login_url, PASSWORD)
+    assert response.status_code == 400
+    assert "Solicitud vencida" in response.text
+    logs = caplog.text
+    assert f"Solicitud de inicio de sesión creada: solicitud={request_id[:6]}" in logs
+    assert f"Solicitud de inicio de sesión no encontrada: solicitud={request_id[:6]}" in logs
+    assert request_id not in logs  # solo 6 caracteres
