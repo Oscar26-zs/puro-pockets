@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Literal
 
+from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
+from starlette.applications import Starlette
 
 from puro_pockets.config import Settings
+from puro_pockets.domain.auth import LoginRateLimiter
+from puro_pockets.mcp.login import build_login_handler
 from puro_pockets.services.health import HealthService
+from puro_pockets.services.oauth import SCOPE_MCP, VALID_SCOPES, OwnerOAuthProvider
+from puro_pockets.services.passwords import PasswordVerifier
 
 # Protección contra DNS rebinding. El SDK valida Host (si no está permitido: 421) y Origin (solo si
 # viene; si no está permitido: 403). Dentro del contenedor el servidor escucha en 0.0.0.0 y el SDK
@@ -42,8 +49,46 @@ class PingResult(BaseModel):
     )
 
 
-def build_server(health_service: HealthService) -> MCPServer:
-    server = MCPServer("puro-pockets")
+@dataclass
+class AuthComponents:
+    """Piezas del servidor de autorización propio (Hito 3)."""
+
+    provider: OwnerOAuthProvider
+    verifier: PasswordVerifier
+    limiter: LoginRateLimiter
+    registration_enabled: bool = False
+
+
+def build_auth_settings(provider: OwnerOAuthProvider, registration_enabled: bool) -> AuthSettings:
+    return AuthSettings(
+        issuer_url=provider.config.issuer_url,
+        resource_server_url=provider.config.resource_url,
+        # Rechaza tokens emitidos para otro recurso (RFC 8707)
+        validate_token_resource=True,
+        required_scopes=[SCOPE_MCP],
+        # valid_scopes también define los scopes anunciados (incluye offline_access) aunque el
+        # registro esté cerrado; el endpoint /register solo existe con registration_enabled
+        client_registration_options=ClientRegistrationOptions(
+            enabled=registration_enabled,
+            valid_scopes=VALID_SCOPES,
+            default_scopes=VALID_SCOPES,
+        ),
+        revocation_options=RevocationOptions(enabled=True),
+    )
+
+
+def build_server(health_service: HealthService, auth: AuthComponents | None = None) -> MCPServer:
+    if auth is None:
+        server = MCPServer("puro-pockets")
+    else:
+        server = MCPServer(
+            "puro-pockets",
+            auth=build_auth_settings(auth.provider, auth.registration_enabled),
+            auth_server_provider=auth.provider,
+        )
+        server.custom_route("/login", methods=["GET", "POST"])(
+            build_login_handler(auth.provider, auth.verifier, auth.limiter)
+        )
 
     @server.tool()
     async def ping() -> PingResult:
@@ -52,6 +97,13 @@ def build_server(health_service: HealthService) -> MCPServer:
         return PingResult(server=status.server, database=status.database, detail=status.detail)
 
     return server
+
+
+def build_app(server: MCPServer, settings: Settings) -> Starlette:
+    """Aplicación ASGI completa (MCP + OAuth). La usan las pruebas en proceso."""
+    return server.streamable_http_app(
+        transport_security=build_transport_security(settings), host=settings.mcp_host
+    )
 
 
 def run_server(server: MCPServer, settings: Settings) -> None:
