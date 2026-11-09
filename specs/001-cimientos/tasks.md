@@ -121,8 +121,8 @@ documentación en español (FR-016).
 ## Phase 7: Polish & Cross-Cutting Concerns
 
 - [X] T029 Actualizar `docs/plan-tecnico.md` al cerrar el hito: driver psycopg 3, imagen `python:3.14-slim` y versión de uv fijada en el stack; estructura en capas real; confirmar versión, fecha de verificación y ruta de importación del SDK (FR-019); registro de cambios
-- [ ] T030 Crear `specs/001-cimientos/verificacion.md` a partir de `quickstart.md`: cada paso con comandos, resultado esperado y quién lo verificó (Claude o el propietario)
-- [ ] T031 Validación final: `docker compose down -v` y arranque desde cero, migraciones, `ping`, `uv run pytest` completo, `ruff`, `git check-ignore .env`, puertos publicados en `127.0.0.1`
+- [X] T030 Crear `specs/001-cimientos/verificacion.md` a partir de `quickstart.md`: cada paso con comandos, resultado esperado y quién lo verificó (Claude o el propietario)
+- [X] T031 Validación final: `docker compose down -v` y arranque desde cero, migraciones, `ping`, `uv run pytest` completo, `ruff`, `git check-ignore .env`, puertos publicados en `127.0.0.1`
 
 ---
 
