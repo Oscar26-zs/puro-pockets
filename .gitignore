@@ -1,0 +1,44 @@
+# Puro Pockets
+# Importante: NO excluir .specify/, .claude/ ni specs/ (son parte del proyecto).
+
+# --- Secretos y configuración local ---
+.env
+.env.*
+!.env.example
+.claude/settings.local.json
+
+# --- Datos reales y respaldos de la base ---
+*.dump
+*.backup
+*.sql
+# Los .sql versionados (si los hubiera) deben vivir en migrations/
+!migrations/**/*.sql
+backups/
+
+# --- Volúmenes de Postgres ---
+pgdata/
+postgres-data/
+data/postgres/
+
+# --- Python ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- Node (MCP Inspector, dashboard) ---
+node_modules/
+
+# --- Sistema operativo y editores ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
