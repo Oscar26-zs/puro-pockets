@@ -115,3 +115,9 @@ procedimiento "Actualizar el SDK de MCP" de [docs/plan-tecnico.md](docs/plan-tec
 - **Falta una variable en `.env`:** Docker Compose indica cuál (por ejemplo, `Falta POSTGRES_PASSWORD
   en .env`).
 - **Conexiones lentas desde el equipo:** usa `127.0.0.1` y no `localhost` en `DATABASE_URL`.
+- **`ping` responde `database: error` después de cambiar la contraseña en `.env`:** Postgres solo
+  aplica `POSTGRES_PASSWORD` la primera vez, cuando el volumen está vacío. Si cambias la contraseña
+  después, la base conserva la anterior. En desarrollo, sin datos que conservar, borra el volumen y
+  vuelve a levantar: `docker compose down -v` y `docker compose up -d --build` (luego aplica las
+  migraciones). El volumen se llama `puro-pockets_pgdata` y lo comparten todas las copias del
+  repositorio en el mismo equipo.
