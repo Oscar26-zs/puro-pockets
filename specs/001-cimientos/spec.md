@@ -1,6 +1,6 @@
 # Feature Specification: Cimientos del proyecto
 
-**Feature Branch**: `001-cimientos`
+**Feature Branch**: `hito-1-cimientos`
 
 **Created**: 2026-11-09
 

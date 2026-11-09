@@ -1,6 +1,6 @@
 # Implementation Plan: Cimientos del proyecto
 
-**Branch**: `001-cimientos` | **Date**: 2026-11-09 | **Spec**: [spec.md](spec.md)
+**Branch**: `hito-1-cimientos` | **Date**: 2026-11-09 | **Spec**: [spec.md](spec.md)
 
 **Input**: Feature specification from `/specs/001-cimientos/spec.md`
 
