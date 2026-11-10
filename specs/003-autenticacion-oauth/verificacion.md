@@ -18,14 +18,14 @@ pasos del propietario están en el README, sección "Autenticación (Hito 3)".
 | 7 | Límite de intentos de inicio de sesión (por IP y global), sin afectar a `/mcp` con token | ✅ Claude | Pasa |
 | 8 | Solo hashes en la base; registros sin secretos | ✅ Claude | Pasa |
 | 9 | Hash argon2 con `$` llega intacto al contenedor | ✅ Claude | Pasa |
-| 10 | Conector de claude.ai: registro, inicio de sesión, `ping` (SC-002) | 👤 Propietario | Pendiente |
-| 11 | Desconectar y reconectar (SC-003) | 👤 Propietario | Pendiente |
-| 12 | Inicio de sesión en menos de 1 s en el homelab (SC-006) | 👤 Propietario | Pendiente |
-| 13 | Refresco real con duraciones cortas desde claude.ai | 👤 Propietario | Pendiente |
+| 10 | Conector de claude.ai: registro, inicio de sesión, `ping` (SC-002) | 👤 Propietario | ✅ Pasa (homelab, también con datos móviles) |
+| 11 | Desconectar y reconectar (SC-003) | 👤 Propietario | ✅ Pasa |
+| 12 | Inicio de sesión en menos de 1 s en el homelab (SC-006) | 👤 Propietario | ✅ Pasa (`--benchmark`) |
+| 13 | Refresco real con duraciones cortas desde claude.ai | 👤 Propietario | ✅ Pasa |
 
 ## Detalle de lo verificado por Claude
 
-- **Pruebas:** `uv run pytest` → **80 passed** (71 unitarias + 9 de integración); `ruff` limpio.
+- **Pruebas:** `uv run pytest` → **91 passed** al cierre (80 en la primera verificación) (71 unitarias + 9 de integración); `ruff` limpio.
   - `tests/unit/test_oauth_http.py`: la aplicación ASGI real (SDK + proveedor + página de inicio de
     sesión) con un cliente de prueba: 401 sin token y con token inventado; metadatos RFC 9728 y RFC 8414
     (`S256`, `offline_access`, registro y revocación); flujo completo y `tools/call ping` con el token;
@@ -67,3 +67,19 @@ pasos del propietario están en el README, sección "Autenticación (Hito 3)".
 
 Si el conector no completa el flujo, guarda `docker compose logs --since 15m mcp` (sin secretos) y
 repórtalo en lugar de cambiar la configuración.
+
+## Cierre (2026-11-09)
+
+El propietario confirmó todos sus pasos en el homelab: conector de claude.ai con inicio de sesión y
+`ping` (también con datos móviles), registro cerrado después (`OAUTH_REGISTRATION_ENABLED=false`),
+desconectar y reconectar, refresco con duraciones cortas, revocación con
+`scripts/revoke_tokens.py --yes`, benchmark de argon2 por debajo de 1 s y reinicio del homelab.
+En Cloudflare queda **una sola réplica** del túnel (la del homelab).
+
+Incidencias resueltas durante la verificación:
+- "Client ID not found": el mismo token del túnel corría también en el equipo de desarrollo (dos
+  réplicas, dos bases distintas). Documentado en el README.
+- "Solicitud vencida": envío doble del formulario tras un inicio de sesión correcto. Ahora un envío
+  repetido con la contraseña correcta devuelve la misma redirección durante 2 minutos.
+
+**Hito 3 terminado.**
