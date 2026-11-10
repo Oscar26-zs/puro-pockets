@@ -262,6 +262,7 @@ memoria" de [docs/plan-tecnico.md](docs/plan-tecnico.md), con la fecha y el equi
 | Salud del túnel (detalle) | `docker inspect --format '{{json .State.Health.Status}}' puro-pockets-cloudflared-1` | `"healthy"` |
 | Conexiones del túnel | `docker compose logs --tail 30 cloudflared` | líneas `Registered tunnel connection` |
 | Panel de Cloudflare | Zero Trust → Networks → Tunnels | **Healthy** |
+| Una sola réplica | Zero Trust → Networks → Tunnels → `puro-pockets` → Connectors | **un único conector** (el homelab) |
 | De punta a punta | `uv run python scripts/ping.py --url https://mcp.puropockets.space/mcp` | `"auth": "required"`; y `ping` desde Claude con `database: ok` |
 
 Si `cloudflared` no queda sano:
@@ -430,6 +431,14 @@ procedimiento "Actualizar el SDK de MCP" de [docs/plan-tecnico.md](docs/plan-tec
 - **Falta una variable en `.env`:** Docker Compose indica cuál (por ejemplo, `Falta POSTGRES_PASSWORD
   en .env`).
 - **Conexiones lentas desde el equipo:** usa `127.0.0.1` y no `localhost` en `DATABASE_URL`.
+- **"Client ID … not found" para un cliente que sí existe, o fallos intermitentes del conector:**
+  el túnel está corriendo en **dos máquinas a la vez** (por ejemplo, el homelab y tu equipo de
+  desarrollo con el mismo `CF_TUNNEL_TOKEN`). Cloudflare reparte las peticiones entre ambas réplicas,
+  cada una con su propia base de datos: el registro cae en una y `/authorize` en la otra. Comprueba
+  que en Cloudflare (Tunnels → `puro-pockets` → Connectors) haya un solo conector, y en el equipo de
+  desarrollo detén el túnel con `docker compose stop cloudflared` y deja `CF_TUNNEL_TOKEN` y
+  `COMPOSE_PROFILES` vacíos. El registro `Cliente no encontrado en esta base` aparece en la máquina
+  que recibió la petición.
 - **`ping` responde `database: error` después de cambiar la contraseña en `.env`:** Postgres solo
   aplica `POSTGRES_PASSWORD` la primera vez, cuando el volumen está vacío. Si cambias la contraseña
   después, la base conserva la anterior. En desarrollo, sin datos que conservar, borra el volumen y

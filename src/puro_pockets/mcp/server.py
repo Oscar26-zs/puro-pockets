@@ -5,14 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+import uvicorn
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 from starlette.applications import Starlette
+from starlette.types import ASGIApp
 
 from puro_pockets.config import Settings
 from puro_pockets.domain.auth import LoginRateLimiter
+from puro_pockets.mcp.audit import OAuthAuditMiddleware
 from puro_pockets.mcp.login import build_login_handler
 from puro_pockets.services.health import HealthService
 from puro_pockets.services.oauth import SCOPE_MCP, VALID_SCOPES, OwnerOAuthProvider
@@ -99,17 +102,22 @@ def build_server(health_service: HealthService, auth: AuthComponents | None = No
     return server
 
 
-def build_app(server: MCPServer, settings: Settings) -> Starlette:
-    """Aplicación ASGI completa (MCP + OAuth). La usan las pruebas en proceso."""
-    return server.streamable_http_app(
+def build_app(server: MCPServer, settings: Settings) -> ASGIApp:
+    """Aplicación ASGI completa (MCP + OAuth) con auditoría de rechazos OAuth.
+
+    La usan el arranque (run_server) y las pruebas en proceso, así que prueban lo mismo.
+    """
+    app: Starlette = server.streamable_http_app(
         transport_security=build_transport_security(settings), host=settings.mcp_host
     )
+    return OAuthAuditMiddleware(app)
 
 
 def run_server(server: MCPServer, settings: Settings) -> None:
-    server.run(
-        transport="streamable-http",
+    # Igual que MCPServer.run(transport="streamable-http"), pero con la app envuelta en la auditoría
+    uvicorn.run(
+        build_app(server, settings),
         host=settings.mcp_host,
         port=settings.mcp_port,
-        transport_security=build_transport_security(settings),
+        log_level="info",
     )

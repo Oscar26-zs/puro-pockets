@@ -10,7 +10,9 @@ from puro_pockets.config import load_settings
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False: no silenciar los loggers de la aplicación (p. ej. la
+    # auditoría de OAuth) cuando Alembic corre en el mismo proceso
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Todavía no hay modelos (el Hito 1 no crea tablas de negocio)
 target_metadata = None

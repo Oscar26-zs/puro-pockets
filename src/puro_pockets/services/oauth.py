@@ -7,7 +7,9 @@ hashes), quién puede registrarse, cuánto duran los tokens y cómo se rotan y r
 from __future__ import annotations
 
 import logging
+import os
 import secrets
+import socket
 import time
 import uuid
 from collections.abc import Callable
@@ -40,6 +42,9 @@ SCOPE_OFFLINE = "offline_access"
 VALID_SCOPES = [SCOPE_MCP, SCOPE_OFFLINE]
 OWNER_SUBJECT = "owner"
 PENDING_TTL_SECONDS = 600  # tiempo para completar el inicio de sesión
+COMPLETED_TTL_SECONDS = 120  # ventana para responder igual a un envío repetido del formulario
+# Identifica este proceso en los registros (contenedor + arranque), para detectar réplicas
+SERVER_INSTANCE = f"{socket.gethostname()}:{os.getpid()}:{int(time.time())}"
 
 
 @dataclass(frozen=True)
@@ -121,6 +126,7 @@ class OwnerOAuthProvider:
         default_factory=lambda: EventLimiter(max_events=5, window_seconds=3600)
     )
     _pending: dict[str, PendingAuthorization] = field(default_factory=dict)
+    _completed: dict[str, tuple[str, float]] = field(default_factory=dict)
 
     async def _db(self, fn: Callable[..., T], *args: object) -> T:
         return await anyio.to_thread.run_sync(partial(fn, *args))
@@ -128,8 +134,18 @@ class OwnerOAuthProvider:
     # --- Clientes (RFC 7591) ---
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
-        raw = await self._db(self.store.get_client, client_id)
-        return OAuthClientInformationFull.model_validate_json(raw) if raw else None
+        try:
+            raw = await self._db(self.store.get_client, client_id)
+            if not raw:
+                # Nota: si varias réplicas del túnel apuntan a bases distintas, el cliente puede
+                # existir en otra máquina (ver README, "Problemas frecuentes").
+                logger.info("Cliente no encontrado en esta base: client_id=%s", client_id[:8])
+                return None
+            return OAuthClientInformationFull.model_validate_json(raw)
+        except Exception:
+            # No se oculta como "no encontrado": se registra la excepción real y se propaga
+            logger.exception("Error al leer el cliente client_id=%s", client_id[:8])
+            raise
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         if not self.registration_limiter.allow(self.clock()):
@@ -158,7 +174,7 @@ class OwnerOAuthProvider:
         await self._db(self.store.save_client, client_info.client_id, client_info.model_dump_json())
         logger.info(
             "Cliente registrado: client_id=%s nombre=%r retorno=%s",
-            client_info.client_id,
+            client_info.client_id[:8],
             client_info.client_name,
             ", ".join(sorted({redirect_domain(u) for u in uris})),
         )
@@ -185,6 +201,15 @@ class OwnerOAuthProvider:
             scopes=tuple(params.scopes or VALID_SCOPES),
             created_at=self.clock(),
         )
+        logger.info(
+            "Solicitud de inicio de sesión creada: solicitud=%s client_id=%s retorno=%s "
+            "pendientes=%d servidor=%s",
+            request_id[:6],
+            client.client_id[:8],
+            redirect_domain(redirect),
+            len(self._pending),
+            SERVER_INSTANCE,
+        )
         return f"{self.config.issuer_url}{self.config.login_path}?request={request_id}"
 
     def _purge_pending(self) -> None:
@@ -194,7 +219,18 @@ class OwnerOAuthProvider:
 
     def get_pending(self, request_id: str) -> PendingAuthorization | None:
         self._purge_pending()
-        return self._pending.get(request_id)
+        pending = self._pending.get(request_id)
+        if pending is None:
+            # Causas posibles: más de 10 minutos, reinicio del servidor (las solicitudes viven en
+            # memoria) u otra réplica del túnel. `servidor` identifica el proceso que respondió.
+            logger.info(
+                "Solicitud de inicio de sesión no encontrada: solicitud=%s pendientes=%d "
+                "servidor=%s",
+                request_id[:6] or "-",
+                len(self._pending),
+                SERVER_INSTANCE,
+            )
+        return pending
 
     async def complete_authorization(self, request_id: str) -> str:
         """Tras un inicio de sesión correcto: emite el código y devuelve la URL de retorno."""
@@ -214,9 +250,28 @@ class OwnerOAuthProvider:
             ),
         )
         logger.info(
-            "Código emitido: client_id=%s retorno=%s", pending.client_id, pending.redirect_domain
+            "Código emitido: client_id=%s retorno=%s",
+            pending.client_id[:8],
+            pending.redirect_domain,
         )
-        return construct_redirect_uri(pending.redirect_uri, code=code, state=pending.state)
+        redirect = construct_redirect_uri(pending.redirect_uri, code=code, state=pending.state)
+        # Se recuerda unos minutos para responder igual a un envío repetido del formulario (Enter +
+        # clic, doble clic, autocompletado): el navegador muestra la última respuesta y, sin esto,
+        # el segundo envío tapaba la redirección buena con "Solicitud vencida"
+        self._purge_completed()
+        self._completed[request_id] = (redirect, self.clock())
+        return redirect
+
+    def _purge_completed(self) -> None:
+        limit = self.clock() - COMPLETED_TTL_SECONDS
+        for key in [k for k, (_, at) in self._completed.items() if at < limit]:
+            del self._completed[key]
+
+    def get_completed_redirect(self, request_id: str) -> str | None:
+        """Redirección ya emitida para esta solicitud (solo durante COMPLETED_TTL_SECONDS)."""
+        self._purge_completed()
+        entry = self._completed.get(request_id)
+        return entry[0] if entry else None
 
     async def load_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: str
@@ -241,10 +296,10 @@ class OwnerOAuthProvider:
     ) -> OAuthToken:
         now = self.clock()
         if not await self._db(self.store.consume_code, hash_token(authorization_code.code), now):
-            logger.warning("Código reutilizado o vencido: client_id=%s", client.client_id)
+            logger.warning("Código reutilizado o vencido: client_id=%s", client.client_id[:8])
             raise TokenError("invalid_grant", "El código ya se usó.")
         family_id = str(uuid.uuid4())
-        logger.info("Tokens emitidos: client_id=%s cadena=%s", client.client_id, family_id[:8])
+        logger.info("Tokens emitidos: client_id=%s cadena=%s", client.client_id[:8], family_id[:8])
         return await self._issue_pair(
             client.client_id, family_id, tuple(authorization_code.scopes), now
         )
@@ -296,7 +351,7 @@ class OwnerOAuthProvider:
             logger.warning(
                 "Refresco reutilizado: cadena %s revocada (client_id=%s)",
                 record.family_id[:8],
-                client.client_id,
+                client.client_id[:8],
             )
             return None
         return RefreshToken(
@@ -321,7 +376,7 @@ class OwnerOAuthProvider:
             if record is not None:
                 await self._db(self.store.revoke_family, record.family_id, now)
             raise TokenError("invalid_grant", "El token de refresco ya no es válido.")
-        logger.info("Refresco: client_id=%s cadena=%s", client.client_id, record.family_id[:8])
+        logger.info("Refresco: client_id=%s cadena=%s", client.client_id[:8], record.family_id[:8])
         return await self._issue_pair(client.client_id, record.family_id, tuple(scopes), now)
 
     async def load_access_token(self, token: str) -> AccessToken | None:
@@ -345,5 +400,5 @@ class OwnerOAuthProvider:
         if record is not None:
             await self._db(self.store.revoke_family, record.family_id, self.clock())
             logger.info(
-                "Revocación: cadena %s (client_id=%s)", record.family_id[:8], record.client_id
+                "Revocación: cadena %s (client_id=%s)", record.family_id[:8], record.client_id[:8]
             )
