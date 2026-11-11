@@ -1,5 +1,7 @@
 """Almacén SQL de movimientos: salario, gastos, anulación, categorías y clave de operación (Hito 5);
-extras pendientes y su reparto, gastos fijos y sus pagos (Hito 6).
+extras pendientes y su reparto, gastos fijos y sus pagos (Hito 6); bolsas nuevas y archivadas con su
+reajuste de porcentajes, y metas (Hito 7). Toda operación que sube un saldo evalúa las metas en su
+transacción (`_settle_goals`, RN-24).
 
 Cada escritura guarda el cambio y su clave de operación en una sola transacción (principio 3.6). Si
 otra llamada simultánea guardó la misma clave primero, la PK de `idempotency_keys` lo detecta: se
@@ -9,15 +11,16 @@ revierte todo y se lanza `OperationTaken` para que el servicio devuelva el resul
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import Connection, func, insert, select, update
+from sqlalchemy import Connection, delete, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
 from puro_pockets.db.budget_store import (
     LIVE_EXPENSE,
     SqlBudgetStore,
+    budget_month_allocations,
     categories,
     constraint_name,
     expenses,
@@ -25,8 +28,10 @@ from puro_pockets.db.budget_store import (
     income_allocations,
     incomes,
     insert_lines,
+    pockets,
     recurring_expense_amounts,
     recurring_expenses,
+    savings_goals,
 )
 from puro_pockets.domain.balances import IncomeKind
 from puro_pockets.domain.categories import Category
@@ -34,11 +39,14 @@ from puro_pockets.domain.errors import (
     AlreadyVoided,
     CategoryAlreadyExists,
     ExtraAlreadyDistributed,
+    GoalAlreadyActive,
     MovementNotFound,
     MovementVoided,
+    PocketAlreadyExists,
     RecurringAlreadyPaid,
     RecurringNameTaken,
 )
+from puro_pockets.domain.goals import Goal, GoalStatus
 from puro_pockets.domain.ledger import MovementKind, MovementRef
 from puro_pockets.domain.money import Currency
 from puro_pockets.domain.months import Month
@@ -46,9 +54,12 @@ from puro_pockets.domain.recurring import RecurringRef, RecurringTemplate
 from puro_pockets.services.budget import AllocationLine
 from puro_pockets.services.records import (
     ExpenseRow,
+    GoalChange,
     IncomeRow,
     NewExpense,
+    NewGoal,
     NewIncome,
+    NewPocket,
     NewRecurring,
     Operation,
     OperationTaken,
@@ -60,6 +71,8 @@ OPERATION_PK = "idempotency_keys_pkey"
 CATEGORY_NAME_INDEX = "ux_categories_name_ci"
 PAYMENT_INDEX = "ux_expenses_recurring_month"
 RECURRING_NAME_INDEX = "ux_recurring_expenses_name_active"
+POCKET_NAME_INDEX = "ux_pockets_name_ci"
+ACTIVE_GOAL_INDEX = "ux_savings_goals_active_pocket"
 
 
 def _income_row(r) -> IncomeRow:
@@ -190,6 +203,7 @@ class SqlLedgerStore(SqlBudgetStore):
             ).scalar_one()
             if lines:
                 insert_lines(conn, income_id, lines)
+                self._settle_goals(conn, income.income_date)
             return respond(income_id)
 
         return self._write(operation, work)
@@ -200,6 +214,7 @@ class SqlLedgerStore(SqlBudgetStore):
         lines: Sequence[AllocationLine],
         operation: Operation,
         respond: Callable[[], dict],
+        on: date | None = None,
     ) -> dict:
         ref = str(MovementRef(MovementKind.INCOME, income_id))
 
@@ -222,6 +237,7 @@ class SqlLedgerStore(SqlBudgetStore):
                 ).scalar()
                 raise MovementVoided(ref) if voided else ExtraAlreadyDistributed(ref)
             insert_lines(conn, income_id, lines)
+            self._settle_goals(conn, on or date.today())
             return respond()
 
         return self._write(operation, work)
@@ -267,6 +283,7 @@ class SqlLedgerStore(SqlBudgetStore):
         voided_at: datetime,
         operation: Operation,
         response: dict,
+        on: date | None = None,
     ) -> None:
         table = incomes if ref.kind is MovementKind.INCOME else expenses
 
@@ -279,6 +296,8 @@ class SqlLedgerStore(SqlBudgetStore):
             if changed == 0:
                 exists = conn.execute(select(table.c.id).where(table.c.id == ref.number)).first()
                 raise AlreadyVoided(str(ref)) if exists else MovementNotFound(str(ref))
+            if ref.kind is MovementKind.EXPENSE:  # anular un gasto sube el saldo de su bolsa
+                self._settle_goals(conn, on or voided_at.date())
             return response
 
         self._write(operation, work)
@@ -538,3 +557,134 @@ class SqlLedgerStore(SqlBudgetStore):
                 )
             ).all()
         return {r.recurring_id: r.id for r in rows}
+
+    # --- Bolsas flexibles (Hito 7) ---
+
+    def future_allocation_months(self, after: Month) -> list[Month]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                select(budget_month_allocations.c.month)
+                .where(budget_month_allocations.c.month > str(after))
+                .distinct()
+                .order_by(budget_month_allocations.c.month)
+            ).scalars()
+            return [Month.parse(m) for m in rows]
+
+    @staticmethod
+    def _replace_rows(conn: Connection, month: Month, rows: dict[int, int]) -> None:
+        conn.execute(
+            delete(budget_month_allocations).where(budget_month_allocations.c.month == str(month))
+        )
+        if rows:
+            conn.execute(
+                insert(budget_month_allocations),
+                [
+                    {"month": str(month), "pocket_id": pid, "percentage": pct}
+                    for pid, pct in rows.items()
+                ],
+            )
+
+    def create_pocket(
+        self, new: NewPocket, operation: Operation, respond: Callable[[int], dict]
+    ) -> dict:
+        def work(conn: Connection) -> dict:
+            pocket_id = conn.execute(
+                insert(pockets)
+                .values(name=new.name, behavior=new.behavior.value, group_name=new.group)
+                .returning(pockets.c.id)
+            ).scalar_one()
+            self._replace_rows(conn, new.month, {**new.existing, pocket_id: new.share})
+            return respond(pocket_id)
+
+        try:
+            return self._write(operation, work)
+        except IntegrityError as exc:
+            if constraint_name(exc) == POCKET_NAME_INDEX:
+                raise PocketAlreadyExists() from None
+            raise
+
+    def archive_pocket(
+        self,
+        pocket_id: int,
+        at: datetime,
+        months: dict[Month, dict[int, int]],
+        operation: Operation,
+        respond: Callable[[], dict],
+    ) -> dict:
+        def work(conn: Connection) -> dict:
+            conn.execute(
+                update(pockets)
+                .where((pockets.c.id == pocket_id) & pockets.c.active)
+                .values(active=False, archived_at=at)
+            )
+            conn.execute(
+                update(savings_goals)
+                .where(
+                    (savings_goals.c.pocket_id == pocket_id) & savings_goals.c.archived_at.is_(None)
+                )
+                .values(archived_at=at)
+            )
+            for month, rows in months.items():
+                self._replace_rows(conn, month, rows)
+            return respond()
+
+        return self._write(operation, work)
+
+    # --- Metas (Hito 7) ---
+
+    def list_goals(self) -> list[Goal]:
+        with self._engine.connect() as conn:
+            return self._read_goals(conn)
+
+    def _goal_write(self, operation: Operation, work: Callable[[Connection], dict]) -> dict:
+        try:
+            return self._write(operation, work)
+        except IntegrityError as exc:
+            if constraint_name(exc) == ACTIVE_GOAL_INDEX:
+                raise GoalAlreadyActive("otra") from None
+            raise
+
+    def create_goal(
+        self, new: NewGoal, operation: Operation, respond: Callable[[int], dict], on: date
+    ) -> dict:
+        def work(conn: Connection) -> dict:
+            goal_id = conn.execute(
+                insert(savings_goals)
+                .values(
+                    pocket_id=new.pocket_id,
+                    name=new.name,
+                    target_amount=new.target_amount,
+                    target_date=new.target_date,
+                    status=GoalStatus.ACTIVE.value,
+                    created_on=new.created_on,
+                )
+                .returning(savings_goals.c.id)
+            ).scalar_one()
+            self._settle_goals(conn, on)
+            return respond(goal_id)
+
+        return self._goal_write(operation, work)
+
+    def update_goal(
+        self, change: GoalChange, operation: Operation, respond: Callable[[], dict], on: date
+    ) -> dict:
+        def work(conn: Connection) -> dict:
+            values: dict[str, object] = {}
+            if change.target_amount is not None:
+                values["target_amount"] = change.target_amount
+            if change.target_date is not None:
+                values["target_date"] = change.target_date
+            elif change.clear_target_date:
+                values["target_date"] = None
+            if change.status is not None:
+                values["status"] = change.status.value
+            if values:
+                conn.execute(
+                    update(savings_goals)
+                    .where(savings_goals.c.id == change.goal_id)
+                    .values(**values)
+                )
+            self._settle_goals(conn, on)
+            return respond()
+
+        return self._goal_write(operation, work)

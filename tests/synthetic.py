@@ -4,7 +4,9 @@ Nunca usa datos reales. Cada conjunto sale de una semilla fija, que las pruebas 
 para reproducir el caso. Desde el Hito 5: salarios en CRC y USD, gastos (con sobregastos, en CRC y
 USD), anulaciones (incluido el saldo inicial y su nueva carga). Desde el Hito 6: extras pendientes
 (fuera del invariante), repartidos (dentro) y anulados (revierten), y gastos fijos con pagos
-(algunos anulados y vueltos a pagar). Los Hitos 8 y 9 lo extienden con transferencias y cierres.
+(algunos anulados y vueltos a pagar). Desde el Hito 7, operaciones estructurales
+(`apply_structure`): bolsas nuevas con las tres estrategias, metas creadas y cambiadas, y archivado
+de bolsas con saldo cero; ninguna mueve un saldo. Los Hitos 8 y 9 agregan transferencias y cierres.
 """
 
 from __future__ import annotations
@@ -87,6 +89,7 @@ class SyntheticDataset:
     voided_extras: tuple[int, ...] = ()  # índices en `extras`
     recurring: tuple[SyntheticRecurring, ...] = ()
     payments: tuple[SyntheticPayment, ...] = ()
+    structure_seed: int = 0  # semilla de las operaciones estructurales (Hito 7)
 
 
 def _percentages(rng: random.Random, count: int) -> tuple[int, ...]:
@@ -187,6 +190,7 @@ def generate(seed: int) -> SyntheticDataset:
         voided_extras,
         recurring,
         tuple(payments),
+        rng.randrange(2**31),
     )
 
 
@@ -196,6 +200,12 @@ def datasets(n: int = DATASETS) -> list[SyntheticDataset]:
 
 async def apply(store, dataset: SyntheticDataset) -> None:
     """Registra el conjunto con los servicios reales (las mismas reglas que usan las tools)."""
+    await apply_money(store, dataset)
+    await apply_structure(store, dataset)
+
+
+async def apply_money(store, dataset: SyntheticDataset) -> None:
+    """Movimientos de dinero de los Hitos 4 a 6."""
     ids = [p.id for p in sorted(store.list_pockets(), key=lambda p: p.id) if p.active]
     for month, percentages in dataset.allocations:
         store.replace_allocation(month, dict(zip(ids, percentages, strict=True)))
@@ -292,3 +302,67 @@ async def _apply_recurring(ledger: LedgerService, dataset: SyntheticDataset, pre
             await ledger.add_expense(
                 operation_id=f"{prefix}-repay-{n}", expense_date=payment.day.isoformat(), **args
             )
+
+
+STRATEGIES = ("proporcional", "desde_una_bolsa", "manual")
+
+
+def _shares(rng: random.Random, names: list[str]) -> list[tuple[str, int]]:
+    return list(zip(names, _percentages(rng, len(names)), strict=True))
+
+
+async def apply_structure(store, dataset: SyntheticDataset) -> None:
+    """Hito 7: bolsas nuevas, metas y archivado de bolsas vacías. No mueve dinero."""
+    rng = random.Random(dataset.structure_seed)
+    ledger = LedgerService(store, today=lambda: TODAY, rate_range=RATES)
+    prefix = f"syn-{dataset.seed}-h7"
+    created = []
+    for n in range(rng.randint(0, 3)):
+        name = f"Bolsa nueva sintética {n + 1}"
+        behavior = rng.choice(["consumo", "acumulable"])
+        month = rng.choice([None, str(Month.of(TODAY))])
+        strategy = rng.choice(STRATEGIES)
+        active = [p for p in store.list_pockets() if p.active]
+        args = {"strategy": strategy, "month": month, "percentage": rng.randint(0, 40)}
+        if strategy == "desde_una_bolsa":
+            args["from_pocket"] = rng.choice(active).name
+            args["percentage"] = 0  # siempre alcanza
+        if strategy == "manual":
+            args["percentages"] = _shares(rng, [p.name for p in active] + [name])
+            args["percentage"] = None
+        preview = await ledger.create_bolsa(name, behavior, **args)
+        await ledger.create_bolsa(
+            name,
+            behavior,
+            confirm=True,
+            operation_id=f"{prefix}-bolsa-{n}",
+            preview_token=preview.preview_token,
+            **args,
+        )
+        created.append(name)
+    goals = 0
+    for pocket in [p for p in store.list_pockets() if p.active]:
+        if pocket.behavior is not Behavior.ACUMULABLE or rng.random() < 0.4:
+            continue
+        goal = await ledger.create_goal(
+            pocket.name,
+            f"Meta sintética {goals}",
+            rng.randint(1, 8_000_000),
+            f"{prefix}-meta-{goals}",
+        )
+        goals += 1
+        if goal.status == "activa" and rng.random() < 0.5:
+            change = rng.choice(
+                [{"target_amount": rng.randint(1, 8_000_000)}, {"action": "pausar"}]
+            )
+            await ledger.update_goal(goal.reference, f"{prefix}-upd-{goals}", **change)
+    for n, name in enumerate(created):
+        if rng.random() < 0.5:
+            continue  # las bolsas nuevas no recibieron dinero: su saldo es cero
+        preview = await ledger.archive_bolsa(name)
+        await ledger.archive_bolsa(
+            name,
+            confirm=True,
+            operation_id=f"{prefix}-arch-{n}",
+            preview_token=preview.preview_token,
+        )

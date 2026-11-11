@@ -20,6 +20,7 @@ from puro_pockets.mcp.budget_tools import register_budget_tools
 from puro_pockets.mcp.extras_tools import register_extras_tools
 from puro_pockets.mcp.ledger_tools import register_ledger_tools
 from puro_pockets.mcp.login import build_login_handler
+from puro_pockets.mcp.pockets_tools import register_pockets_tools
 from puro_pockets.services.budget import BudgetService
 from puro_pockets.services.health import HealthService
 from puro_pockets.services.ledger import LedgerService
@@ -77,6 +78,15 @@ Ingreso extra (todo lo que no es el salario):
 
 Gastos fijos: manage_recurring crea y modifica plantillas; list_pending_recurring muestra qué falta
 pagar en el mes; el pago es add_expense con recurring.
+
+Bolsas nuevas o archivadas: preview_rebalance muestra cómo quedarían los porcentajes; create_bolsa y
+archive_bolsa siguen el mismo patrón que confirm_allocation (vista previa con preview_token,
+explicación breve, aprobación explícita del propietario, confirm=true). Una bolsa solo se archiva
+con saldo cero.
+
+Metas: una meta no tiene dinero propio; su avance es el saldo de su bolsa acumulable. Con
+get_goal_progress puedes estimar una fecha (si projectable es true) y sugerir qué hacer con un
+excedente, siempre como sugerencia y con confirmación del propietario.
 """
 
 
@@ -151,6 +161,8 @@ def build_server(
         register_ledger_tools(server, ledger)
         # Extras y gastos fijos (Hito 6), con el mismo servicio y también detrás del token
         register_extras_tools(server, ledger)
+        # Bolsas flexibles y metas (Hito 7), también detrás del token
+        register_pockets_tools(server, ledger)
 
     return server
 

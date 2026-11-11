@@ -43,9 +43,11 @@ from puro_pockets.domain.errors import (
     CategoryAlreadyExists,
     DomainError,
     MovementNotFound,
+    MovementTouchesArchivedPocket,
     RecurringAlreadyPaid,
     RecurringInactive,
 )
+from puro_pockets.domain.goals import progress
 from puro_pockets.domain.idempotency import fingerprint, validate_operation_id
 from puro_pockets.domain.ledger import (
     MovementKind,
@@ -74,6 +76,8 @@ from puro_pockets.domain.pockets import (
 from puro_pockets.domain.recurring import RecurringRef, RecurringTemplate, find_recurring
 from puro_pockets.services.budget import AllocationLine
 from puro_pockets.services.extras import ExtrasMixin
+from puro_pockets.services.flex import PocketsMixin
+from puro_pockets.services.goals import GoalsMixin
 from puro_pockets.services.ledger_core import (
     AllocationShare,
     BalanceKindName,
@@ -176,6 +180,13 @@ class VoidResult(BaseModel):
     )
 
 
+class BolsaGoal(BaseModel):
+    reference: str = Field(description="Referencia de la meta (M-n).")
+    target_amount: int
+    percent: int = Field(description="Avance = saldo de la bolsa, en % con tope de 100.")
+    missing: int
+
+
 class BolsaStatus(BaseModel):
     pocket: str
     behavior: BehaviorName
@@ -189,6 +200,9 @@ class BolsaStatus(BaseModel):
     percent_used: int | None = Field(description="Consumo: % usado, entero hacia abajo.")
     balance: int | None = Field(description="Acumulable: saldo histórico (11.2).")
     negative: bool
+    goal: BolsaGoal | None = Field(
+        default=None, description="Acumulable: su meta activa, si la tiene (Hito 7)."
+    )
 
 
 class SummaryPocket(BaseModel):
@@ -330,7 +344,7 @@ def _raw_rate(value: object) -> int | str | None:
     return value.strip() if isinstance(value, str) else value
 
 
-class LedgerService(ExtrasMixin, RecurringMixin):
+class LedgerService(ExtrasMixin, RecurringMixin, PocketsMixin, GoalsMixin):
     """Casos de uso de movimientos. Los extras (Hito 6) y los gastos fijos viven en mixins."""
 
     # --- Ingreso base (constitución 5.1; RN-02, RN-03, RN-08, RN-55 a 57) ---
@@ -695,6 +709,10 @@ class LedgerService(ExtrasMixin, RecurringMixin):
             if income.pending:
                 notes.append("El extra seguía sin asignar: anularlo no cambia ninguna bolsa.")
             else:
+                lines = self._store.income_lines(income.id)
+                touched = {line.pocket_id for line in lines if line.amount > 0}
+                if any(not pockets[pid].active for pid in touched):
+                    raise MovementTouchesArchivedPocket(str(ref))
                 negatives = self._negatives_after_void(income, pockets)
         else:
             expense = self._store.get_expense(ref.number)
@@ -703,6 +721,8 @@ class LedgerService(ExtrasMixin, RecurringMixin):
             if expense.voided:
                 raise AlreadyVoided(str(ref))
             label = "gasto"  # anular un gasto solo sube la bolsa: nunca deja negativos
+            if not pockets[expense.pocket_id].active:
+                raise MovementTouchesArchivedPocket(str(ref))
             day, month, amount = expense.expense_date, expense.month, expense.amount
             if expense.recurring_id is not None:
                 notes.append(
@@ -740,7 +760,12 @@ class LedgerService(ExtrasMixin, RecurringMixin):
         )
         try:
             self._store.void_movement(
-                ref, reason, self._now(), operation, result.model_dump(mode="json")
+                ref,
+                reason,
+                self._now(),
+                operation,
+                result.model_dump(mode="json"),
+                on=self._today(),
             )
         except OperationTaken:
             return VoidResult.model_validate(self._after_race(operation))
@@ -821,6 +846,21 @@ class LedgerService(ExtrasMixin, RecurringMixin):
             else None,
             balance=line.balance,
             negative=line.negative,
+            goal=self._bolsa_goal(target.id, line.balance),
+        )
+
+    def _bolsa_goal(self, pocket_id: int, balance: int | None) -> BolsaGoal | None:
+        goal = next(
+            (g for g in self._store.list_goals() if g.live and g.pocket_id == pocket_id), None
+        )
+        if goal is None or balance is None:
+            return None
+        figures = progress(goal, balance)  # el avance es el mismo saldo de 11.2 (RN-23)
+        return BolsaGoal(
+            reference=goal.reference,
+            target_amount=goal.target_amount,
+            percent=figures.percent,
+            missing=figures.missing,
         )
 
     @staticmethod

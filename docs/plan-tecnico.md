@@ -1,6 +1,6 @@
 # Plan técnico de Puro Pockets
 
-**Versión:** 0.8
+**Versión:** 0.9
 **Fecha:** 2026-11-11
 **Capa:** 2 en la gobernanza de `.specify/memory/constitution.md`. Decide la técnica; si contradice a
 la constitución, gana la constitución y se corrige este documento.
@@ -283,6 +283,61 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
 - **Registros:** sin montos, descripciones, orígenes de extras ni nombres de plantillas (solo
   referencias `I-`, `G-`, `F-`, mes, moneda y si hubo sobregasto).
 
+### Bolsas flexibles y metas [DECIDIDO] (Hito 7)
+
+- **Código:** `domain/rebalance.py` (reajuste puro: proporcional, desde una bolsa, manual),
+  `domain/goals.py` (estados, avance, `reached`, variación neta del RN-28), validaciones nuevas en
+  `domain/pockets.py`; `services/flex.py` y `services/goals.py` (mixins de `LedgerService`);
+  `mcp/pockets_tools.py`. Migración `0006_pockets_goals`.
+- **Reajuste (RN-13, RN-14, RN-17, RN-01):** función pura sobre los porcentajes vigentes del mes
+  objetivo (propios o heredados, RN-03). Proporcional con enteros hacia abajo y el residuo en la
+  última bolsa existente; nunca negativos, siempre suma 100 (prueba de propiedades con semilla fija).
+  `preview_rebalance` no guarda nada y devuelve los porcentajes anteriores y nuevos.
+- **Crear bolsa:** nombre único sin distinguir mayúsculas (también frente a las archivadas, índice
+  `ux_pockets_name_ci`); crear la bolsa y escribir el conjunto completo de porcentajes del mes
+  objetivo ocurre en una transacción (RN-13). Mes objetivo: el siguiente por defecto o el actual
+  (RN-15), nunca uno pasado. **Lectura de "recalcular el mes en curso" (RN-15) [PROPUESTO]:** nada
+  recalcula repartos guardados (cada reparto guarda el porcentaje que usó); aplicar en el mes actual
+  solo cambia los porcentajes para lo que se reparta desde ese momento. Los meses futuros que ya
+  tienen porcentajes propios no cambian (la bolsa nueva queda en 0 % en ellos) y la respuesta los
+  lista.
+- **Archivar bolsa (RN-16 a RN-18):** solo con saldo (acumulable) o disponible del mes (consumo)
+  cero; nunca se borra (`active = FALSE`, `archived_at`). Es inmediato: en la misma transacción
+  reescribe sin ella los porcentajes del mes actual (propios o heredados) y de cada mes futuro con
+  porcentajes propios, con la estrategia elegida, así ningún mes de ahora en adelante reparte a una
+  bolsa inactiva ni suma distinto de 100. Sus metas quedan con `archived_at`. No se reactiva. Para
+  vaciar una bolsa con saldo hace falta una transferencia (Hito 8).
+- **Bolsa archivada en las tools anteriores [PROPUESTO]:** rechaza gastos, pagos de fijos, repartos
+  de salario y de extras, porcentajes, categorías y metas nuevas (las búsquedas por nombre solo ven
+  bolsas activas), y `void_transaction` rechaza anular un movimiento que toque una bolsa archivada
+  (cambiaría un saldo que debe quedar en cero).
+- **Metas (RN-19 a RN-25):** solo en bolsas acumulables activas; una sola meta activa por bolsa
+  (índice único parcial `ux_savings_goals_active_pocket` y validación en el código). Sin dinero
+  propio: el avance es `accumulated_balance` (11.2), la misma función de `get_bolsa_status`; crear o
+  cambiar una meta no mueve saldos. Referencia pública `M-<n>`.
+- **Lograda (RN-24):** `domain.goals.reached` decide; los almacenes la llaman (`_settle_goals`) en
+  la transacción de cada operación que sube un saldo: salario, saldo inicial, reparto de un extra,
+  anular un gasto, crear una meta y cambiarla. Fecha de logro: la del movimiento que cruzó el
+  objetivo (fecha del ingreso; hoy para el reparto de un extra o una anulación), nunca anterior a la
+  creación de la meta. Permanece lograda aunque el saldo baje, también si se anula el movimiento que
+  la cruzó [PROPUESTO]. Si al crearla el saldo ya alcanza el objetivo, nace lograda [PROPUESTO].
+- **RN-28:** `get_goal_progress` entrega el promedio mensual de la variación neta del saldo
+  (asignado con ese mes presupuestario − gastado ese mes calendario) de los últimos 3 meses completos
+  desde el primero con movimientos, y `projectable` (al menos un mes y promedio positivo). La
+  proyección la hace Claude. El excedente (RN-29) se informa y se queda en la bolsa.
+- **Confirmación:** `create_bolsa` y `archive_bolsa` siguen el patrón de `confirm_allocation`
+  (vista previa con `preview_token`, aprobación explícita, `confirm=true`). La nota del Hito 6 sigue
+  valiendo: `confirm=true` no garantiza por sí solo que el modelo haya preguntado; la ficha, las
+  instrucciones del servidor y el permiso por tool del cliente lo mitigan.
+- **Idempotencia:** `operation_id` en `create_bolsa` y `archive_bolsa` (al confirmar),
+  `create_goal` y `update_goal`.
+- **Base (0006):** disparadores: una bolsa no se borra, no se reactiva ni cambia de comportamiento;
+  una meta no se borra, no cambia de bolsa, nombre ni fecha de creación; una lograda no cambia de
+  estado, fecha de logro ni objetivo; una archivada no cambia.
+- **Downgrade protegido:** `0006_pockets_goals` aborta si hay metas o bolsas archivadas, salvo con
+  `ALLOW_DESTRUCTIVE_DOWNGRADE=true`.
+- **Registros:** sin montos, porcentajes ni nombres de metas (solo `M-n`, comportamiento y meses).
+
 ---
 
 ## 12. Integración con Claude (MCP)
@@ -310,12 +365,12 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
 | `list_pending_recurring` | Gastos fijos pendientes del mes (con vencimiento y atraso) y los ya pagados; el pago es `add_expense` con `recurring`. | [DECIDIDO] (Hito 6) |
 | `set_allocation` / `update_allocation` | Cambiar porcentajes de un mes. | [DECIDIDO] |
 | `get_allocation` | Consultar los porcentajes de un mes; si no tiene, los del mes anterior más cercano indicando su origen (RN-03). | [DECIDIDO] (Hito 4) |
-| `preview_rebalance` | Calcular reajuste de porcentajes sin guardar. | [DECIDIDO] |
-| `create_bolsa` | Crear bolsa y reajustar porcentajes (atómico). | [DECIDIDO] |
-| `archive_bolsa` | Archivar bolsa (exige saldo cero, mediante transferencia previa) y redistribuir porcentaje. | [DECIDIDO] |
-| `create_goal` | Crear meta asociada a una bolsa acumulable. | [DECIDIDO] |
-| `get_goal_progress` | Avance, faltante, % y fecha estimada de una meta. | [DECIDIDO] |
-| `update_goal` | Cambiar monto o fecha, pausar o reactivar. | [DECIDIDO] |
+| `preview_rebalance` | Calcular reajuste de porcentajes sin guardar. | [DECIDIDO] (Hito 7) |
+| `create_bolsa` | Crear bolsa y reajustar porcentajes (atómico). | [DECIDIDO] (Hito 7) |
+| `archive_bolsa` | Archivar bolsa (exige saldo cero, mediante transferencia previa) y redistribuir porcentaje. | [DECIDIDO] (Hito 7) |
+| `create_goal` | Crear meta asociada a una bolsa acumulable. | [DECIDIDO] (Hito 7) |
+| `get_goal_progress` | Avance, faltante, %, excedente y los números del RN-28 (la fecha estimada la calcula Claude). | [DECIDIDO] (Hito 7) |
+| `update_goal` | Cambiar monto o fecha, pausar o reactivar. | [DECIDIDO] (Hito 7) |
 | `preview_transfer` | Simular movimiento entre bolsas (con aviso de efecto en metas). | [DECIDIDO] |
 | `transfer_between_bolsas` | Registrar movimiento entre bolsas. | [DECIDIDO] |
 | `preview_month_close` | Calcular déficits y sobrantes del mes, con propuesta. | [DECIDIDO] |
@@ -325,7 +380,7 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
 
 ### 12.2 Reglas para las tools
 1. Las tools devuelven datos exactos y validan reglas. No dan consejos.
-2. Las tools que modifican dinero deben ser **idempotentes** o aceptar una clave de operación, para que una llamada repetida por Claude no duplique un movimiento. **[DECIDIDO] (Hito 5):** `operation_id` obligatorio en `add_income` (al confirmar), `add_expense` y `void_transaction`; misma clave y mismo contenido devuelven la respuesta original, otro contenido es error. **(Hito 6):** también en `register_extra_income`, `confirm_allocation` (al confirmar) y `manage_recurring` (crear, actualizar, desactivar).
+2. Las tools que modifican dinero deben ser **idempotentes** o aceptar una clave de operación, para que una llamada repetida por Claude no duplique un movimiento. **[DECIDIDO] (Hito 5):** `operation_id` obligatorio en `add_income` (al confirmar), `add_expense` y `void_transaction`; misma clave y mismo contenido devuelven la respuesta original, otro contenido es error. **(Hito 6):** también en `register_extra_income`, `confirm_allocation` (al confirmar) y `manage_recurring` (crear, actualizar, desactivar). **(Hito 7):** también en `create_bolsa` y `archive_bolsa` (al confirmar), `create_goal` y `update_goal`.
 3. Las tools destructivas o de reparto piden confirmación del usuario antes de ejecutarse.
 4. Las respuestas de error deben ser claras para que Claude pueda explicarlas.
 5. Toda tool que reciba un monto en dólares exige el tipo de cambio (RN-57). Si falta, devuelve error en lugar de asumirlo. Esto incluye el pago de un gasto fijo en USD (decisión #12d): nunca se reutiliza el último tipo de cambio.
@@ -394,8 +449,11 @@ CREATE TABLE pockets (
   group_name TEXT,                                     -- opcional, solo estadísticas
   surplus_target_pocket_id BIGINT REFERENCES pockets(id),  -- opcional; debe ser acumulable (se valida en código)
   active BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  archived_at TIMESTAMPTZ,                              -- Hito 7 (0006): cuándo se archivó (RN-16)
+  CHECK (active = (archived_at IS NULL))
 );
+-- Disparadores (0006): no se borra, no se reactiva, no cambia de comportamiento
 
 CREATE UNIQUE INDEX ux_pockets_name_ci ON pockets (lower(name));
 
@@ -457,20 +515,26 @@ CREATE TABLE income_allocations (
   UNIQUE (income_id, pocket_id)
 );
 
--- Metas: objetivo asociado a una bolsa acumulable. No guardan dinero ni avance.
+-- Metas: objetivo asociado a una bolsa acumulable. No guardan dinero ni avance (RN-23).
+-- Hito 7, migración 0006. Referencia pública M-<id>
 CREATE TABLE savings_goals (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  bolsa_id BIGINT NOT NULL REFERENCES pockets(id),      -- debe ser acumulable (se valida en create_goal)
-  nombre TEXT NOT NULL,
-  monto_objetivo BIGINT NOT NULL CHECK (monto_objetivo > 0),  -- en colones
-  fecha_objetivo DATE,                                 -- opcional
-  estado TEXT NOT NULL DEFAULT 'activa'
-    CHECK (estado IN ('activa','lograda','pausada')),
-  fecha_logro DATE                                     -- se llena al pasar a 'lograda'
+  pocket_id BIGINT NOT NULL REFERENCES pockets(id),     -- acumulable y activa (se valida en código)
+  name TEXT NOT NULL CHECK (char_length(name) BETWEEN 1 AND 60),
+  target_amount BIGINT NOT NULL CHECK (target_amount > 0),  -- en colones (RN-19)
+  target_date DATE,                                    -- opcional (RN-20)
+  status TEXT NOT NULL DEFAULT 'activa'
+    CHECK (status IN ('activa','lograda','pausada')),
+  achieved_on DATE,                                    -- se llena al pasar a 'lograda' (RN-24)
+  created_on DATE NOT NULL,
+  archived_at TIMESTAMPTZ,                             -- se archivó junto con su bolsa (6.4)
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK ((status = 'lograda') = (achieved_on IS NOT NULL))
 );
--- Una sola meta activa por bolsa (RN-22, pendiente de confirmar en decisión #11)
-CREATE UNIQUE INDEX ux_meta_activa_por_bolsa
-  ON savings_goals(bolsa_id) WHERE estado = 'activa';
+-- Una sola meta activa por bolsa (RN-22, decisión #11 resuelta)
+CREATE UNIQUE INDEX ux_savings_goals_active_pocket
+  ON savings_goals (pocket_id) WHERE status = 'activa' AND archived_at IS NULL;
+-- Disparadores (0006): sin DELETE; bolsa, nombre y creación no cambian; lograda y archivada fijas
 
 -- Gastos (Hito 5, migración 0004). Referencia pública G-<id>
 CREATE TABLE expenses (
@@ -573,7 +637,9 @@ CREATE TABLE closure_adjustments (
 
 **Validaciones que viven en el código (no en el esquema):**
 - Cada mes suma 100 % en `budget_month_allocations` (RN-01), con cada bolsa activa exactamente una vez.
-- Las metas solo se asocian a bolsas `acumulable` (RN-21).
+- Las metas solo se asocian a bolsas `acumulable` y activas (RN-21).
+- El reajuste de porcentajes al crear o archivar una bolsa deja cada mes afectado en exactamente 100 % entre bolsas activas (RN-01, RN-13, RN-17).
+- Una bolsa archivada no recibe gastos ni repartos, y no se anulan movimientos que la toquen.
 - No se transfiere más del saldo o disponible de la bolsa de origen (RN-42).
 - Un mes cerrado no admite movimientos nuevos ni anulaciones (RN-44, RN-48, RN-53).
 - Una bolsa solo se archiva con saldo cero (RN-18).
@@ -596,7 +662,7 @@ esquema de la sección 17, con los valores que se guardan para estados, tipos y 
 |---|---|---|
 | Bolsa | `pockets` | — |
 | Comportamiento de la bolsa (RN-10) | `pockets.behavior` | `consumo`, `acumulable` |
-| Bolsa inactiva (archivada, RN-16) | `pockets.active` | `TRUE` activa, `FALSE` archivada |
+| Bolsa inactiva (archivada, RN-16) | `pockets.active`, `pockets.archived_at` | `TRUE` activa, `FALSE` archivada (con fecha) |
 | Grupo de la bolsa | `pockets.group_name` | texto libre u omitido |
 | Destino de sobrante sugerido (6.5) | `pockets.surplus_target_pocket_id` | id de una bolsa acumulable u omitido |
 | Categoría | `categories` (`active`) | `TRUE`, `FALSE` |
@@ -613,12 +679,13 @@ esquema de la sección 17, con los valores que se guardan para estados, tipos y 
 | Mes calendario del gasto (RN-32) | `expenses.month` | `'YYYY-MM'` |
 | Gasto pendiente de clasificar (RN-34) | `expenses.category_id` | `NULL` |
 | Anulación con registro (RN-53) | `voided`, `voided_at`, `void_reason` en `incomes` y `expenses` | `voided`: `TRUE`, `FALSE` |
-| Clave de operación (12.2.2) | `idempotency_keys` | `tool`: `add_income`, `add_expense`, `void_transaction`, `register_extra_income`, `confirm_allocation`, `manage_recurring` |
+| Clave de operación (12.2.2) | `idempotency_keys` | `tool`: `add_income`, `add_expense`, `void_transaction`, `register_extra_income`, `confirm_allocation`, `manage_recurring`, `create_bolsa`, `archive_bolsa`, `create_goal`, `update_goal` |
 | Gasto fijo mensual (8.1) | `recurring_expenses` (`active`) | `TRUE` activo, `FALSE` desactivado |
 | Monto del gasto fijo por mes (8.1) | `recurring_expense_amounts` (`from_month`, `original_amount`) | CRC en colones; USD en centavos |
 | Pago de un gasto fijo (RN-35) | `expenses.recurring_id` | id de la plantilla u omitido |
-| Meta de ahorro (sección 7) | `savings_goals` | — |
-| Estado de una meta (RN-24) | `savings_goals.estado` | `activa`, `lograda`, `pausada` |
+| Meta de ahorro (sección 7) | `savings_goals` (`pocket_id`, `target_amount`, `target_date`) | colones; fecha opcional |
+| Estado de una meta (RN-24) | `savings_goals.status`, `achieved_on` | `activa`, `lograda` (con fecha de logro), `pausada` |
+| Meta archivada con su bolsa (6.4) | `savings_goals.archived_at` | instante u omitido |
 | El registro de transferencias (RN-40) | `transfers` | — |
 | Motivo de una transferencia (sección 9) | `transfers.motivo` | `cubrir_sobregasto`, `reasignacion`, `cierre_de_mes`, `ajuste` |
 | Estado del mes (RN-49) | `month_closures.estado` | `abierto`, `cerrado` |
@@ -627,7 +694,7 @@ esquema de la sección 17, con los valores que se guardan para estados, tipos y 
 **Idioma de los nombres:** decidido en el Hito 1: inglés (ver "Convención de idioma"). Ya están en
 inglés las tablas de los Hitos 4 a 6 (`pockets`, `categories`, `budget_month_allocations`, `incomes`,
 `income_allocations`, `expenses`, `idempotency_keys`, `recurring_expenses`,
-`recurring_expense_amounts`); el resto conserva los nombres del borrador y
+`recurring_expense_amounts`, `savings_goals`, Hito 7); el resto conserva los nombres del borrador y
 se pasa al inglés antes de crear cada tabla. Los **valores** guardados (columna de la derecha) se mantienen como están.
 
 ---
@@ -644,3 +711,4 @@ se pasa al inglés antes de crear cada tabla. Los **valores** guardados (columna
 | 0.6 | 2026-11-10 | Hito 4: `pocket` como nombre de "bolsa" en tablas y código (las tools conservan sus nombres); se agregan al catálogo `preview_initial_balance` (principio 3.2), `list_bolsas` y `get_allocation`; nombres en inglés de `pockets`, `categories`, `budget_month_allocations`, `incomes` e `income_allocations` en la sección 17 y en la tabla concepto → tabla (nombres únicos sin distinguir mayúsculas); `incomes` se crea en el Hito 4 sin moneda ni anulación (llegan en el Hito 5 con su propia migración) y con índice único para el saldo inicial; sección "Presupuesto (Hito 4)": `APP_TIMEZONE`, estructura del código, salvaguardas y pruebas. |
 | 0.7 | 2026-11-10 | Hito 5: sección "Movimientos (Hito 5)" (montos sin `float`, conversión half-up, `USD_RATE_MIN`/`USD_RATE_MAX`, salario, gastos, anulación, referencias `I-`/`G-`, idempotencia, disparadores del libro mayor, downgrade protegido); esquema de la sección 17 con `incomes` completo, `expenses` e `idempotency_keys` (migración `0004_movements`); catálogo con `preview_income`, `create_category` y `list_categories`; regla 12.2.2 pasa a [DECIDIDO]; tabla concepto → tabla actualizada. |
 | 0.8 | 2026-11-11 | Hito 6: sección "Extras y gastos fijos (Hito 6)" (extra pendiente y "sin asignar", contexto con solo agregados, reparto con ficha de vista previa, instrucciones del servidor, límite de `confirm=true` y su mitigación, plantillas con historial de monto, pendientes y pago enlazado, referencias `F-`, idempotencia, disparadores y downgrade protegido); esquema de la sección 17 con `recurring_expenses`, `recurring_expense_amounts`, `expenses.recurring_id` y las restricciones nuevas de `incomes` (migración `0005_extras_recurring`); catálogo con `list_pending_recurring`; reglas 12.2.2 y 12.2.5 ampliadas; tabla concepto → tabla actualizada. |
+| 0.9 | 2026-11-11 | Hito 7: sección "Bolsas flexibles y metas (Hito 7)" (reajuste puro con prueba de propiedades, crear bolsa atómica con el conjunto completo del mes, lectura [PROPUESTO] de RN-15, archivado inmediato que reescribe el mes actual y los futuros, bolsa archivada en las tools anteriores, metas sin dinero propio con una sola fuente del saldo, evaluación centralizada de `lograda`, números del RN-28, confirmación con ficha, disparadores y downgrade protegido); esquema de la sección 17 con `pockets.archived_at` y `savings_goals` en inglés (migración `0006_pockets_goals`); catálogo y regla 12.2.2 actualizados; tabla concepto → tabla con metas y archivado. |

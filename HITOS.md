@@ -1,6 +1,6 @@
 # Puro Pockets: hoja de ruta por hitos
 
-**Versión:** 0.9 (borrador)
+**Versión:** 0.10 (borrador)
 **Fecha:** 2026-11-09
 **Fuentes de verdad:** reglas en `.specify/memory/constitution.md` (referenciadas como `RN-xx`); técnica en `docs/plan-tecnico.md`.
 **Este documento define:** qué entrega cada hito, en qué orden y cuándo se considera terminado. No repite reglas de negocio ni el esquema de datos: los referencia.
@@ -41,7 +41,7 @@ Las reglas no negociables (datos reales, capa de negocio, invariante de integrid
 | 4 | Bolsas y porcentajes | Bolsas, porcentajes por mes, saldo inicial | RN-01 a 03, 10 a 12, 54 |
 | 5 | Ingresos base y gastos | Reparto del salario, gastos, CRC/USD, anulación (**MVP**) | RN-02, 03, 08 (reparto), 31 a 34, 37, 38, 53, 55 a 57, 59 |
 | 6 | Extras y gastos fijos | Reparto de extras recomendado por Claude, gastos fijos | RN-04 a 09, 35, 36 |
-| 7 | Bolsas flexibles y metas | Crear y archivar bolsas con reajuste, metas | RN-13 a 30 |
+| 7 | Bolsas flexibles y metas | Crear y archivar bolsas con reajuste, metas | RN-13 a 25, 28, 29 |
 | 8 | Transferencias | Mover dinero entre bolsas con registro | RN-39 a 45, 58 |
 | 9 | Cierre de mes | Déficits, sobrantes y cierre atómico | RN-46 a 52 |
 | 10 | Dashboard | Estadísticas y gráficos | Sección 13 del plan técnico |
@@ -55,7 +55,6 @@ El **MVP usable** llega al terminar el Hito 5: puedes cargar tu saldo inicial, r
 
 | Decisión pendiente | Debe resolverse antes de | Dónde se resuelve |
 |---|---|---|
-| #11 Una sola meta activa por bolsa | Hito 7 | Constitución, sección 14 |
 | Framework de la API para el dashboard | Hito 10 | `/speckit-clarify` del Hito 10 |
 
 ---
@@ -302,14 +301,16 @@ Los gastos fijos se recuerdan **bajo demanda** (`list_pending_recurring`), sin p
 
 **Objetivo:** crear bolsas nuevas en cualquier momento y asociar metas de ahorro a bolsas acumulables.
 
-**Requiere resuelta** la decisión #11 (una meta por bolsa).
+La decisión #11 (una sola meta activa por bolsa) quedó resuelta el 2026-11-11 (constitución 1.0.3).
 
 ### Entregables
-- **Crear bolsa** con reajuste atómico de porcentajes, y estrategias proporcional, desde una bolsa o manual (RN-13, 14). Aplica desde el mes siguiente por defecto (RN-15).
-- **Archivar bolsa** exigiendo saldo cero (RN-16 a 18). Para vaciarla se usará el Hito 8, así que en este hito se deja el mecanismo preparado y se completa su prueba al terminar el Hito 8.
-- **Metas:** objetivo asociado a una bolsa acumulable, sin dinero propio; avance calculado del saldo; estados y fecha de logro (RN-19 a 30).
-- **Índice único parcial** de una meta activa por bolsa (si #11 se confirma).
-- **Tools:** `preview_rebalance`, `create_bolsa`, `archive_bolsa`, `create_goal`, `get_goal_progress`, `update_goal`.
+- **Tablas** (migración `0006_pockets_goals`, que conserva los datos del Hito 6): `savings_goals` con el índice único parcial de una meta activa por bolsa (RN-22); `pockets.archived_at`.
+- **Crear bolsa** con reajuste atómico de porcentajes, y estrategias proporcional, desde una bolsa o manual (RN-13, 14). Escribe el conjunto completo del mes objetivo; aplica desde el mes siguiente por defecto o desde el actual (RN-15), nunca un mes pasado. Ningún reparto ya guardado se recalcula.
+- **Archivar bolsa** exigiendo saldo cero (RN-16 a 18) y redistribuyendo su porcentaje en el mes actual y en los futuros con porcentajes propios (RN-17); sus metas se archivan con ella. Una bolsa archivada no recibe gastos ni repartos. Para vaciarla se usará el Hito 8 (ver sus pruebas pendientes).
+- **Metas:** objetivo asociado a una bolsa acumulable, sin dinero propio; avance calculado del saldo con la misma función de 11.2; estados y fecha de logro evaluados en la transacción de cada operación que sube un saldo; números del RN-28 para que Claude proyecte (RN-19 a 25, 28, 29; RN-26 y 27 derogadas, RN-30 resuelta).
+- **Contexto del extra** (`get_allocation_context`) con las metas activas y su avance (RN-05).
+- **Tools:** `preview_rebalance`, `create_bolsa`, `archive_bolsa`, `create_goal`, `get_goal_progress`, `update_goal`, con vista previa y ficha (`preview_token`) en crear y archivar.
+- **Invariante** (sección 11.4): crear bolsas, reajustar porcentajes, archivar y crear o cambiar metas no altera ningún saldo.
 
 ### Prompt para /speckit-specify
 > El propietario quiere crear bolsas nuevas (por ejemplo Emergencia o Viaje), y que al crearlas se le muestre cómo cambiarían los porcentajes para aprobarlos. Quiere definir metas de ahorro, como un viaje de ₡500.000 sin fecha obligatoria, ligadas a una bolsa de ahorro, y ver su avance según el saldo de esa bolsa. Incluye pruebas automáticas que verifiquen los criterios de aceptación.
@@ -317,8 +318,12 @@ Los gastos fijos se recuerdan **bajo demanda** (`list_pending_recurring`), sin p
 ### Terminado cuando
 - Creas la bolsa Emergencia: la vista previa muestra el reajuste, al confirmar los porcentajes suman 100 y aplican desde el mes siguiente.
 - Creas la meta "Viaje ₡500.000" en una bolsa acumulable y `get_goal_progress` muestra avance y faltante.
-- La app rechaza crear una meta en una bolsa de consumo.
+- La app rechaza crear una meta en una bolsa de consumo, y una segunda meta activa en la misma bolsa.
 - La meta pasa a `lograda` al alcanzar el objetivo y se mantiene así aunque luego gastes de la bolsa.
+- Archivar una bolsa con saldo distinto de cero se rechaza; una bolsa vacía se archiva, ningún mes de ahora en adelante le reparte y rechaza gastos.
+- Claude no confirma una bolsa nueva ni un archivado sin mostrarte la vista previa y esperar tu aprobación explícita.
+- La migración conserva los datos del Hito 6 y su downgrade está protegido.
+- La prueba del invariante pasa, y también la de que el avance de una meta es el saldo de su bolsa.
 
 ---
 
@@ -332,6 +337,7 @@ Los gastos fijos se recuerdan **bajo demanda** (`list_pending_recurring`), sin p
 - **Vista previa con aviso del efecto sobre metas** (RN-58).
 - **Corrección de errores** mediante transferencia inversa (RN-43).
 - **Archivado de bolsas** completado: mover el saldo a otra bolsa permite archivarla (RN-18).
+- **Pruebas pendientes del Hito 7** que se completan aquí: (1) una bolsa con saldo se vacía con una transferencia y luego `archive_bolsa` la archiva; (2) una bolsa de consumo con disponible del mes se vacía igual y se archiva; (3) archivar una bolsa acumulable con meta activa tras vaciarla archiva la meta; (4) la vista previa de la transferencia avisa el efecto sobre la meta (RN-58).
 - **Tools:** `preview_transfer`, `transfer_between_bolsas`.
 
 ### Prompt para /speckit-specify
@@ -429,3 +435,4 @@ Los gastos fijos se recuerdan **bajo demanda** (`list_pending_recurring`), sin p
 | 0.7 | 2026-11-10 | Hito 4: se agrega `preview_initial_balance` a sus tools (principio 3.2 de la constitución; registrado en `docs/plan-tecnico.md` v0.6). La prueba del invariante de integridad empieza en el Hito 4, el primero que registra dinero (regla no negociable 3 de la constitución, que prevalece); el Hito 5 la extiende. Los datos iniciales son solo las bolsas; el 50/30/20 lo guarda el propietario (decisión del 2026-11-10). |
 | 0.8 | 2026-11-10 | Se quita de la sección 3 la decisión #12 (resuelta; constitución 1.0.1). Hito 5: tablas con nombres en inglés (`incomes`, `expenses`, `idempotency_keys`) y migración que conserva los datos del Hito 4; tools `preview_income` (principio 3.2), `create_category` y `list_categories`; anulación del saldo inicial; RN-59 pasa del Hito 8 al Hito 5 en la vista general (sus entregables ya la citaban) y se agregan RN-02, 03 y 08 por el reparto del salario; dos criterios más en "Terminado cuando" (USD sin tipo de cambio; migración y downgrade). |
 | 0.9 | 2026-11-11 | Hito 6: entregables con la migración `0005_extras_recurring` (que conserva los datos del Hito 5), contexto con solo agregados, ficha de vista previa e instrucciones del servidor, gastos fijos con historial de monto y pago con `add_expense`, "sin asignar" en resumen y listado, invariante extendido. Se quita la cuestión de `/speckit-clarify` (decidida por el propietario: gastos fijos bajo demanda). Cuatro criterios más en "Terminado cuando" (aprobación explícita, pago de fijo en USD, migración y downgrade, invariante). |
+| 0.10 | 2026-11-11 | Se quita de la sección 3 la decisión #11 (resuelta; constitución 1.0.3). Hito 7: entregables con la migración `0006_pockets_goals` (conserva los datos del Hito 6), reajuste que escribe el conjunto completo del mes, archivado que redistribuye el mes actual y los futuros, metas evaluadas en cada operación que sube un saldo, metas en el contexto del extra; reglas de la vista general y del entregable de metas ajustadas (RN-26 y 27 derogadas, RN-30 resuelta); cuatro criterios más en "Terminado cuando". Hito 8: pruebas pendientes del archivado de bolsas con saldo. |

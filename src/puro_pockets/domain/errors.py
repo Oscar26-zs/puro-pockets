@@ -102,3 +102,57 @@ class RecurringNameTaken(DomainError):
         super().__init__(
             "Ya existe un gasto fijo activo con ese nombre (sin distinguir mayúsculas)."
         )
+
+
+class PocketAlreadyExists(DomainError):
+    def __init__(self) -> None:
+        super().__init__(
+            "Ya existe una bolsa con ese nombre (sin distinguir mayúsculas), activa o archivada."
+        )
+
+
+class PocketNotEmpty(DomainError):
+    """RN-18: se archiva solo con saldo (acumulable) o disponible del mes (consumo) cero."""
+
+    def __init__(self, kind: str) -> None:
+        super().__init__(
+            f"No se puede archivar: su {kind} no es cero (RN-18). Primero hay que mover ese dinero "
+            "a otra bolsa con una transferencia, que llega en el Hito 8."
+        )
+
+
+class GoalNeedsSavingsPocket(DomainError):
+    """RN-21: una meta solo se asocia a una bolsa acumulable."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Una meta solo se asocia a una bolsa acumulable (RN-21); esa bolsa es de consumo."
+        )
+
+
+class GoalAlreadyActive(DomainError):
+    """RN-22: una sola meta activa por bolsa."""
+
+    def __init__(self, reference: str) -> None:
+        super().__init__(
+            f"Esa bolsa ya tiene una meta activa ({reference}); una bolsa admite una sola (RN-22). "
+            "Pausa esa meta o usa otra bolsa acumulable."
+        )
+
+
+class GoalNotFound(DomainError):
+    def __init__(self, reference: str) -> None:
+        super().__init__(f"No existe la meta {reference}. Consúltalas con get_goal_progress.")
+
+
+class GoalClosed(DomainError):
+    def __init__(self, reference: str, reason: str) -> None:
+        super().__init__(f"La meta {reference} {reason}: no admite cambios.")
+
+
+class MovementTouchesArchivedPocket(DomainError):
+    def __init__(self, reference: str) -> None:
+        super().__init__(
+            f"El movimiento {reference} afecta a una bolsa archivada: anularlo cambiaría el saldo "
+            "de una bolsa que debe quedar en cero (RN-18)."
+        )

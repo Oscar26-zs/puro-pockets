@@ -13,9 +13,11 @@ from typing import Protocol
 
 from puro_pockets.domain.balances import IncomeKind
 from puro_pockets.domain.categories import Category
+from puro_pockets.domain.goals import Goal, GoalStatus
 from puro_pockets.domain.ledger import MovementRef
 from puro_pockets.domain.money import Converted, Currency
 from puro_pockets.domain.months import Month
+from puro_pockets.domain.pockets import Behavior
 from puro_pockets.domain.recurring import RecurringTemplate
 from puro_pockets.services.budget import AllocationLine, BudgetStore
 
@@ -111,6 +113,36 @@ class RecurringChange:
     category_id: int | None = None
 
 
+@dataclass(frozen=True)
+class NewPocket:
+    name: str
+    behavior: Behavior
+    group: str | None
+    month: Month  # mes desde el que aplican los porcentajes nuevos (RN-15)
+    existing: dict[int, int]  # porcentajes nuevos de las bolsas existentes en ese mes
+    share: int  # porcentaje de la bolsa nueva
+
+
+@dataclass(frozen=True)
+class NewGoal:
+    pocket_id: int
+    name: str
+    target_amount: int
+    target_date: date | None
+    created_on: date
+
+
+@dataclass(frozen=True)
+class GoalChange:
+    """Cambios de una meta; None = sin cambio."""
+
+    goal_id: int
+    target_amount: int | None = None
+    target_date: date | None = None
+    clear_target_date: bool = False
+    status: GoalStatus | None = None
+
+
 class OperationTaken(Exception):  # noqa: N818 - señal interna, no un error de negocio
     """Otra llamada simultánea guardó la misma clave de operación primero."""
 
@@ -132,7 +164,8 @@ class LedgerStore(BudgetStore, Protocol):
         operation: Operation,
         respond: Callable[[int], dict],
     ) -> dict:
-        """Ingreso y sus repartos. Un extra pendiente (`income.pending`) no lleva repartos."""
+        """Ingreso y sus repartos. Un extra pendiente (`income.pending`) no lleva repartos. En la
+        misma transacción evalúa las metas (RN-24) con la fecha del ingreso."""
         ...
 
     def distribute_extra(
@@ -141,10 +174,11 @@ class LedgerStore(BudgetStore, Protocol):
         lines: Sequence[AllocationLine],
         operation: Operation,
         respond: Callable[[], dict],
+        on: date | None = None,
     ) -> dict:
-        """Pasa un extra de pendiente a repartido y guarda sus repartos, atómico. Si ya no está
-        pendiente (otra llamada lo repartió) lanza `ExtraAlreadyDistributed`; si está anulado,
-        `MovementVoided`."""
+        """Pasa un extra de pendiente a repartido y guarda sus repartos, atómico, y evalúa las metas
+        (RN-24) con la fecha `on`. Si ya no está pendiente (otra llamada lo repartió) lanza
+        `ExtraAlreadyDistributed`; si está anulado, `MovementVoided`."""
         ...
 
     def record_expense(
@@ -160,8 +194,10 @@ class LedgerStore(BudgetStore, Protocol):
         voided_at: datetime,
         operation: Operation,
         response: dict,
+        on: date | None = None,
     ) -> None:
-        """Marca la anulación solo si no estaba anulado; si ya lo estaba, `AlreadyVoided`."""
+        """Marca la anulación solo si no estaba anulado; si ya lo estaba, `AlreadyVoided`. Anular
+        un gasto sube un saldo: evalúa las metas (RN-24) con la fecha `on`."""
         ...
 
     def get_income(self, income_id: int) -> IncomeRow | None: ...
@@ -223,3 +259,40 @@ class LedgerStore(BudgetStore, Protocol):
     def recurring_payments(self, month: Month) -> dict[int, int]:
         """{id de plantilla: id del gasto} de los pagos vigentes del mes."""
         ...
+
+    # --- Bolsas flexibles y metas (Hito 7) ---
+
+    def future_allocation_months(self, after: Month) -> list[Month]:
+        """Meses posteriores a `after` con porcentajes propios."""
+        ...
+
+    def create_pocket(
+        self, new: NewPocket, operation: Operation, respond: Callable[[int], dict]
+    ) -> dict:
+        """Crea la bolsa y escribe el conjunto completo de porcentajes del mes, atómico (RN-13).
+        Nombre repetido sin distinguir mayúsculas: `PocketAlreadyExists`."""
+        ...
+
+    def archive_pocket(
+        self,
+        pocket_id: int,
+        at: datetime,
+        months: dict[Month, dict[int, int]],
+        operation: Operation,
+        respond: Callable[[], dict],
+    ) -> dict:
+        """Archiva la bolsa (RN-16), archiva sus metas y reescribe los porcentajes de cada mes
+        indicado sin ella (RN-17), todo en una transacción."""
+        ...
+
+    def list_goals(self) -> list[Goal]: ...
+
+    def create_goal(
+        self, new: NewGoal, operation: Operation, respond: Callable[[int], dict], on: date
+    ) -> dict:
+        """Inserta la meta y la evalúa (RN-24). Otra activa en la bolsa: `GoalAlreadyActive`."""
+        ...
+
+    def update_goal(
+        self, change: GoalChange, operation: Operation, respond: Callable[[], dict], on: date
+    ) -> dict: ...

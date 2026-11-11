@@ -8,10 +8,17 @@ Postgres está en tests/integration/test_invariant_sql.py.
 
 import pytest
 
-from puro_pockets.domain.balances import IncomeKind, integrity_gap
-from puro_pockets.domain.pockets import Pocket
+from puro_pockets.domain.balances import (
+    IncomeKind,
+    accumulated_balance,
+    consumption_available,
+    integrity_gap,
+)
+from puro_pockets.domain.goals import progress
+from puro_pockets.domain.months import Month
+from puro_pockets.domain.pockets import Behavior, Pocket
 from tests.fakes import InMemoryLedgerStore
-from tests.synthetic import DATASETS, apply, datasets
+from tests.synthetic import DATASETS, apply, apply_money, apply_structure, datasets
 
 pytestmark = pytest.mark.anyio
 
@@ -88,3 +95,70 @@ async def test_la_prueba_detecta_un_gasto_que_no_resta_de_ninguna_bolsa():
     entries = store.expense_entries()
     assert entries, f"semilla={dataset.seed}"
     assert _gap(store, entries[1:]) == -entries[0].amount
+
+
+MONTHS = [Month(2026, m) for m in range(6, 13)] + [Month(2027, 1)]
+
+
+def _snapshot(store):
+    """Saldo de cada acumulable (11.2) y disponible de cada consumo en cada mes (11.1)."""
+    entries, expenses = store.allocation_entries(), store.expense_entries()
+    result = {}
+    for pocket in store.list_pockets():
+        if pocket.behavior is Behavior.ACUMULABLE:
+            result[pocket.id] = accumulated_balance(entries, pocket.id, expenses)
+        else:
+            result[pocket.id] = tuple(
+                consumption_available(entries, pocket.id, m, expenses) for m in MONTHS
+            )
+    return result
+
+
+async def test_estructura_no_mueve_saldos_y_el_avance_es_el_saldo():
+    """Hito 7: crear bolsas, reajustar porcentajes, crear o cambiar metas y archivar bolsas vacías
+    no altera ningún saldo ni la suma; el avance de cada meta es el saldo de su bolsa."""
+    created = archived = goals = 0
+    for dataset in datasets():
+        pockets = [Pocket(i + 1, n, b) for i, (n, b) in enumerate(dataset.pockets)]
+        store = InMemoryLedgerStore(pockets)
+        await apply_money(store, dataset)
+        before, lines = _snapshot(store), list(store.lines)
+        await apply_structure(store, dataset)
+        after = _snapshot(store)
+        message = f"semilla={dataset.seed}"
+        assert {k: v for k, v in after.items() if k in before} == before, message
+        assert all(v in (0, (0,) * len(MONTHS)) for k, v in after.items() if k not in before), (
+            message
+        )
+        assert store.lines == lines, message  # ningún reparto guardado se recalcula
+        assert _gap(store) == 0, message
+        entries, expenses = store.allocation_entries(), store.expense_entries()
+        for goal in store.goals:
+            balance = accumulated_balance(entries, goal.pocket_id, expenses)
+            assert progress(goal, balance).balance == balance, message
+            if goal.status.value == "lograda":
+                assert goal.achieved_on is not None, message
+        created += len(store.pockets) - len(pockets)
+        archived += sum(not p.active for p in store.pockets)
+        goals += len(store.goals)
+    assert created > 150 and archived > 60 and goals > 150
+
+
+async def test_cambiar_porcentajes_no_altera_meses_pasados():
+    """Lo asignado en cada mes pasado queda igual tras crear y archivar bolsas (RN-02)."""
+    from puro_pockets.domain.balances import assigned
+
+    for dataset in datasets(60):
+        pockets = [Pocket(i + 1, n, b) for i, (n, b) in enumerate(dataset.pockets)]
+        store = InMemoryLedgerStore(pockets)
+        await apply_money(store, dataset)
+        past = [m for m in MONTHS if m < Month(2026, 11)]
+        rows_before = {m: store.allocation_rows(m) for m in past}
+        figures = {
+            (p.id, m): assigned(store.allocation_entries(), p.id, m) for p in pockets for m in past
+        }
+        await apply_structure(store, dataset)
+        assert {m: store.allocation_rows(m) for m in past} == rows_before, f"semilla={dataset.seed}"
+        assert {
+            (p.id, m): assigned(store.allocation_entries(), p.id, m) for p in pockets for m in past
+        } == figures, f"semilla={dataset.seed}"

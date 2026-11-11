@@ -522,6 +522,31 @@ sesión del Hito 3.
   [respaldo](#respaldo-manual-de-la-base) antes de aplicarla. Su downgrade se niega si hay gastos
   fijos, extras o pagos enlazados, salvo con `ALLOW_DESTRUCTIVE_DOWNGRADE=true` (solo en desarrollo).
 
+## Bolsas flexibles y metas (Hito 7)
+
+| Tool | Qué hace |
+|---|---|
+| `preview_rebalance` | Cómo quedarían los porcentajes al crear o archivar una bolsa (no guarda nada). |
+| `create_bolsa` | Crea una bolsa y reajusta los porcentajes en una sola operación (vista previa, luego `confirm=true`). |
+| `archive_bolsa` | Archiva una bolsa con saldo cero y redistribuye su porcentaje (vista previa, luego `confirm=true`). |
+| `create_goal` | Crea una meta (referencia `M-n`) en una bolsa acumulable; una sola meta activa por bolsa. |
+| `get_goal_progress` | Avance (saldo de la bolsa), faltante, excedente y los números para estimar una fecha. |
+| `update_goal` | Cambia el monto o la fecha, o pausa o reactiva una meta. |
+
+- **Estrategias de reajuste:** proporcional (todas cambian en proporción), desde una bolsa (solo una
+  cede o recibe) o manual (das el reparto completo). Siempre suman 100.
+- **Desde cuándo:** una bolsa nueva aplica desde el mes siguiente, o desde el actual si lo pides.
+  Los repartos ya hechos no cambian.
+- **Archivar:** solo con saldo cero; para vaciar una bolsa con dinero hará falta una transferencia
+  (Hito 8). Una bolsa archivada no se borra, no se reactiva y no recibe gastos ni repartos. Sus
+  metas se archivan con ella.
+- **Metas:** no tienen dinero propio; su avance es el saldo de la bolsa. Pasan a "lograda" al
+  alcanzar el objetivo y se quedan así aunque después gastes. Claude puede estimar una fecha y
+  sugerir qué hacer con un excedente, siempre con tu confirmación.
+- **Migración `0006_pockets_goals`:** conserva tus datos del Hito 6. Haz un
+  [respaldo](#respaldo-manual-de-la-base) antes de aplicarla. Su downgrade se niega si hay metas o
+  bolsas archivadas, salvo con `ALLOW_DESTRUCTIVE_DOWNGRADE=true` (solo en desarrollo).
+
 ## Estructura
 
 ```text
