@@ -221,7 +221,7 @@ El SDK de MCP para Python implementa el lado del **servidor de recursos** de OAu
 ### Entregables
 - **Tablas** (con migración): `bolsas`, `categorias`, `budget_month_allocations`, y el registro de ingresos necesario para el saldo inicial.
 - **Lógica de dominio:** validación de que los porcentajes sumen 100 (RN-01), copia de porcentajes del mes anterior (RN-03), reparto en enteros con residuo en la última bolsa (RN-08), comportamientos `consumo` y `acumulable` (RN-10 a 12).
-- **Datos iniciales:** Necesidades (consumo) 50 %, Ahorro (acumulable) 30 % y Gustos (consumo) 20 %.
+- **Datos iniciales:** las bolsas Necesidades (consumo), Ahorro (acumulable) y Gustos (consumo). Los porcentajes sugeridos (50 %, 30 % y 20 %) los guarda el propietario desde Claude; no se guardan automáticamente para ningún mes.
 - **Tools:** `set_allocation`, `get_allocation`, `preview_initial_balance`, `load_initial_balance`, `list_bolsas`.
 - **Saldo inicial** (RN-54): una sola vez, por montos explícitos, que no cuenta como ingreso del mes.
 - **Prueba del invariante de integridad** (sección 11.4) contra datos sintéticos: este es el primer hito que registra dinero (gobernanza, regla no negociable 3).
@@ -420,4 +420,4 @@ Cómo se generan los gastos fijos: ¿automáticamente cada mes (requiere un proc
 | 0.4 | 2026-11-09 | El transporte Streamable HTTP pasa del Hito 2 al Hito 1 (clarificación de la spec `001-cimientos`); en el Hito 2 se expone por el túnel. |
 | 0.5 | 2026-11-09 | Se quita el SDK de MCP de las decisiones pendientes (decidido: `mcp==2.3.0` con `MCPServer`). El "Terminado cuando" del Hito 1 precisa que en GitHub Actions corren ruff y las pruebas unitarias, y las de integración en el equipo de desarrollo. |
 | 0.6 | 2026-11-09 | Se quita de la sección 3 la decisión del servidor de autorización de OAuth (decidido en el Hito 3: propio y mínimo, para un único usuario; registrado en `docs/plan-tecnico.md`). |
-| 0.7 | 2026-11-10 | Hito 4: se agrega `preview_initial_balance` a sus tools (principio 3.2 de la constitución; registrado en `docs/plan-tecnico.md` v0.6). La prueba del invariante de integridad empieza en el Hito 4, el primero que registra dinero (regla no negociable 3 de la constitución, que prevalece); el Hito 5 la extiende. |
+| 0.7 | 2026-11-10 | Hito 4: se agrega `preview_initial_balance` a sus tools (principio 3.2 de la constitución; registrado en `docs/plan-tecnico.md` v0.6). La prueba del invariante de integridad empieza en el Hito 4, el primero que registra dinero (regla no negociable 3 de la constitución, que prevalece); el Hito 5 la extiende. Los datos iniciales son solo las bolsas; el 50/30/20 lo guarda el propietario (decisión del 2026-11-10). |

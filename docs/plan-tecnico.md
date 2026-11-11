@@ -159,6 +159,30 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
 - **Observaciones del SDK:** el endpoint `/revoke` exige `client_secret` aunque sea vacío para clientes
   públicos (defecto de `RevocationRequest`); se deja documentado y cubierto por una prueba que avisará
   cuando se corrija. La comparación de PKCE y los metadatos `client_secret_*` se dejan como están.
+
+### Presupuesto [DECIDIDO] (Hito 4)
+
+- **Código:** `domain/months.py` (mes `YYYY-MM`), `domain/pockets.py` (comportamientos, nombres sin
+  distinguir mayúsculas), `domain/allocation.py` (RN-01, RN-03, RN-08), `domain/initial_balance.py`
+  (RN-54), `domain/balances.py` (11.1, 11.2 y comprobación del invariante 11.4),
+  `services/budget.py`, `db/budget_store.py` y `mcp/budget_tools.py`. Migración `0003_budget`.
+- **Mes actual:** `APP_TIMEZONE` (por defecto `America/Costa_Rica`, con `zoneinfo`; `tzdata` es
+  dependencia directa para Windows).
+- **Herencia de porcentajes (RN-03):** se resuelve al consultar, sin guardar nada. Solo se editan el
+  mes actual y los futuros, así que lo que un mes pasado heredó no cambia.
+- **Saldo inicial:** `load_initial_balance` exige `confirm=true`; índice único parcial
+  `ux_incomes_single_initial_balance` (el Hito 5 lo recrea excluyendo los anulados). No existe tool
+  ni script que lo borre.
+- **Errores:** las reglas lanzan `DomainError` y las tools lo devuelven como `ToolError` (is_error,
+  mensaje en español). El SDK registra ese mensaje, así que los mensajes nunca incluyen montos. Las
+  bibliotecas que en DEBUG registran cuerpos de respuesta (`sse_starlette`,
+  `mcp.server.streamable_http`) quedan fijadas en INFO.
+- **Downgrade protegido:** `0003_budget` aborta el downgrade si hay datos, salvo con
+  `ALLOW_DESTRUCTIVE_DOWNGRADE=true`.
+- **Pruebas de integración:** base temporal `pp_test_<aleatorio>` creada y borrada por las pruebas;
+  se niegan a correr contra cualquier otra base. El invariante se prueba con 200 conjuntos sintéticos
+  en memoria y 40 en Postgres (`tests/synthetic.py`, semilla fija).
+
 ---
 
 ## 12. Integración con Claude (MCP)
@@ -262,7 +286,7 @@ Convenciones de tipos: identificadores y montos en `BIGINT`; banderas en `BOOLEA
 -- Bolsas (Hito 4, migración 0003). "Bolsa" = pocket en el código
 CREATE TABLE pockets (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,  -- también fija el orden de creación (RN-08)
-  name TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,                                  -- único sin distinguir mayúsculas (índice abajo)
   behavior TEXT NOT NULL CHECK (behavior IN ('consumo','acumulable')),
   group_name TEXT,                                     -- opcional, solo estadísticas
   surplus_target_pocket_id BIGINT REFERENCES pockets(id),  -- opcional; debe ser acumulable (se valida en código)
@@ -270,12 +294,15 @@ CREATE TABLE pockets (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE UNIQUE INDEX ux_pockets_name_ci ON pockets (lower(name));
+
 CREATE TABLE categories (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
   pocket_id BIGINT NOT NULL REFERENCES pockets(id),
   active BOOLEAN NOT NULL DEFAULT TRUE
 );
+CREATE UNIQUE INDEX ux_categories_name_ci ON categories (lower(name));
 
 -- Porcentajes por mes (historial). La app valida que cada mes sume 100 (RN-01).
 CREATE TABLE budget_month_allocations (
@@ -458,4 +485,4 @@ cada tabla. Los **valores** guardados (columna de la derecha) se mantienen como 
 | 0.3 | 2026-11-09 | Cierre del Hito 1: Python 3.14 y uv 0.12.5 fijados, driver psycopg 3 en modo síncrono, confirmación del SDK al implementar, medición de memoria en el equipo de desarrollo, estructura del código y servicios de Compose. |
 | 0.4 | 2026-11-09 | Hito 2: dominio `puropockets.space` y subdominio `mcp.puropockets.space`; túnel de Cloudflare como servicio de Compose (perfil `tunnel`, cloudflared 2026.10.3); hosts y orígenes públicos permitidos; reinicio automático y healthchecks. |
 | 0.5 | 2026-11-09 | Hito 3: servidor de autorización OAuth propio (decisión pendiente resuelta), endpoints, clientes, duraciones, scopes, tablas `0002_oauth`, argon2, límite de intentos y revocación. |
-| 0.6 | 2026-11-10 | Hito 4: `pocket` como nombre de "bolsa" en tablas y código (las tools conservan sus nombres); se agregan al catálogo `preview_initial_balance` (principio 3.2), `list_bolsas` y `get_allocation`; nombres en inglés de `pockets`, `categories`, `budget_month_allocations`, `incomes` e `income_allocations` en la sección 17 y en la tabla concepto → tabla; `incomes` se crea en el Hito 4 sin moneda ni anulación (llegan en el Hito 5 con su propia migración) y con índice único para el saldo inicial. |
+| 0.6 | 2026-11-10 | Hito 4: `pocket` como nombre de "bolsa" en tablas y código (las tools conservan sus nombres); se agregan al catálogo `preview_initial_balance` (principio 3.2), `list_bolsas` y `get_allocation`; nombres en inglés de `pockets`, `categories`, `budget_month_allocations`, `incomes` e `income_allocations` en la sección 17 y en la tabla concepto → tabla (nombres únicos sin distinguir mayúsculas); `incomes` se crea en el Hito 4 sin moneda ni anulación (llegan en el Hito 5 con su propia migración) y con índice único para el saldo inicial; sección "Presupuesto (Hito 4)": `APP_TIMEZONE`, estructura del código, salvaguardas y pruebas. |

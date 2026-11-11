@@ -2,8 +2,8 @@
 
 **Fecha:** 2026-11-10 · **Spec:** [spec.md](spec.md)
 
-Cada punto sigue el formato decisión, razón y alternativas. Lo marcado **[PROPUESTO]** lo decidió
-Claude y espera la confirmación del propietario.
+Cada punto sigue el formato decisión, razón y alternativas. Los puntos marcados antes como
+[PROPUESTO] fueron aprobados por el propietario el 2026-11-10 (**[APROBADO]**).
 
 ## 1. Errores de las tools
 
@@ -24,7 +24,7 @@ Claude y espera la confirmación del propietario.
 - **Razón:** verificado: `zoneinfo.ZoneInfo("America/Costa_Rica")` funciona en Windows y en el
   contenedor `python:3.14-slim`. En Windows necesita el paquete `tzdata`, que ya está instalado
   (v2026.6) como dependencia de psycopg.
-- **[PROPUESTO]:** declarar `tzdata` como dependencia directa en `pyproject.toml`, porque el código lo
+- **[APROBADO]:** declarar `tzdata` como dependencia directa en `pyproject.toml`, porque el código lo
   usa directamente. No instala nada nuevo: ya está en `uv.lock`.
 - **Alternativas:** desfase fijo UTC−6 (Costa Rica no tiene horario de verano); descartada porque la
   zona debe ser configurable.
@@ -48,7 +48,7 @@ Claude y espera la confirmación del propietario.
 
 ## 5. Identificación de bolsas en las tools
 
-- **[PROPUESTO]:** las tools reciben y devuelven las bolsas **por nombre** (único), comparando sin
+- **[APROBADO]:** las tools reciben y devuelven las bolsas **por nombre** (único), comparando sin
   distinguir mayúsculas ni espacios al borde. No exponen ids.
 - **Razón:** el propietario habla de "Ahorro", no de "bolsa 2"; minimización (principio 3.10).
 - **Alternativas:** por id (obliga a Claude a listar primero).
@@ -60,8 +60,8 @@ Claude y espera la confirmación del propietario.
 
 ## 7. Aislamiento de las pruebas de integración
 
-- **[PROPUESTO]:** las pruebas de integración del Hito 4 crean una base temporal propia
-  (`<base>_test_<aleatorio>`) en el Postgres local, aplican las migraciones, y la borran al terminar.
+- **[APROBADO]:** las pruebas de integración crean una base temporal propia (`pp_test_<aleatorio>`)
+  y se niegan a correr contra cualquier otra base en el Postgres local, aplican las migraciones, y la borran al terminar.
 - **Razón:** no tocan los datos de desarrollo y cada prueba arranca sin saldo inicial (la regla de una
   sola carga haría fallar una segunda ejecución). El usuario de la imagen oficial de Postgres puede
   crear bases. Nunca se ejecutan contra el homelab.
@@ -70,7 +70,7 @@ Claude y espera la confirmación del propietario.
 
 ## 8. Prueba del invariante sin dependencias nuevas
 
-- **[PROPUESTO]:** generador propio con `random.Random(semilla)`: 200 conjuntos de datos sintéticos
+- **[APROBADO]:** generador propio con `random.Random(semilla)`: 200 conjuntos de datos sintéticos
   (entre 1 y 8 bolsas con comportamiento al azar, porcentajes que suman 100, un saldo inicial y
   varios ingresos sintéticos repartidos con RN-08 en varios meses). La semilla se imprime al fallar
   para reproducir el caso.

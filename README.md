@@ -48,7 +48,14 @@ Debe mostrar `db` como `healthy` y `mcp` como `running`, con los puertos publica
 docker compose exec mcp alembic upgrade head
 ```
 
-Para revertir hasta el inicio y volver a aplicar:
+> **⚠️ `alembic downgrade` borra datos.** Bajar una migración elimina sus tablas y todo lo que
+> contienen. **Nunca** lo ejecutes en el homelab ni con datos reales. Desde el Hito 4, el downgrade de
+> `0003_budget` se niega a correr si las tablas del presupuesto tienen datos; solo continúa con
+> `ALLOW_DESTRUCTIVE_DOWNGRADE=true`, y únicamente después de un respaldo
+> ([Respaldo manual](#respaldo-manual-de-la-base)). Las pruebas automáticas de migraciones usan su
+> propia base temporal y no necesitan este comando.
+
+Solo en el equipo de desarrollo, sin datos que conservar, para revertir y volver a aplicar:
 
 ```powershell
 docker compose exec mcp alembic downgrade base
@@ -89,12 +96,43 @@ uv run ruff format --check .
 En cada push, GitHub Actions corre `ruff` y las pruebas unitarias
 ([.github/workflows/ci.yml](.github/workflows/ci.yml)).
 
+Las pruebas de integración que usan la base crean una **base temporal propia**
+(`pp_test_<aleatorio>`) en el Postgres local y la borran al terminar: no tocan tus datos de
+desarrollo, y se niegan a correr contra cualquier otra base. Usan solo datos sintéticos.
+
 ## Detener y borrar datos
 
 ```powershell
 docker compose down        # detiene; los datos se conservan en el volumen pgdata
 docker compose down -v     # detiene y BORRA los datos de la base (irreversible)
 ```
+
+> **⚠️ `docker compose down -v` borra el volumen de la base.** Úsalo solo en el equipo de desarrollo
+> y nunca donde haya datos reales (el homelab). En el homelab, para detener, usa
+> `docker compose down` (sin `-v`).
+
+## Respaldo manual de la base
+
+Desde el Hito 4 la base guarda datos financieros reales. Hasta que llegue el respaldo automático
+(Hito 11), haz un respaldo manual antes de cualquier operación riesgosa (actualizar, migrar) y de
+vez en cuando. El archivo va **fuera del repositorio** (por ejemplo, en `~/respaldos`); el
+`.gitignore` también ignora `*.dump` por si acaso.
+
+```bash
+# En el homelab, desde la carpeta del repositorio
+mkdir -p ~/respaldos
+docker compose exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc'   > ~/respaldos/puro-pockets-$(date +%Y%m%d-%H%M).dump
+ls -lh ~/respaldos                      # el archivo no debe pesar 0 bytes
+```
+
+Restaurar (solo en una base vacía; borra lo que haya en las tablas que restaura):
+
+```bash
+docker compose exec -T db sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists'   < ~/respaldos/puro-pockets-AAAAMMDD-HHMM.dump
+```
+
+El respaldo contiene tus datos financieros: guárdalo en un lugar privado y no lo subas a ningún
+repositorio.
 
 ## Despliegue en el homelab (Hito 2)
 
@@ -278,6 +316,7 @@ Si `cloudflared` no queda sano:
 ```bash
 cd puro-pockets
 git fetch
+# Antes: respaldo manual (sección "Respaldo manual de la base")
 git switch <rama-o-etiqueta-nueva>      # o: git pull, si sigues una rama
 docker compose up -d --build            # reconstruye mcp y recrea lo que cambió
 docker compose exec mcp alembic upgrade head
@@ -403,6 +442,27 @@ secretos) y revísalos o compártelos:
 docker compose logs --since 15m mcp > registros-oauth.txt
 ```
 
+## Presupuesto (Hito 4)
+
+Bolsas, porcentajes por mes y saldo inicial. Todas las tools exigen el inicio de sesión del Hito 3.
+
+| Tool | Qué hace |
+|---|---|
+| `set_allocation` | Guarda los porcentajes de un mes (todas las bolsas activas; suma exactamente 100; solo mes actual o futuros). |
+| `get_allocation` | Consulta los porcentajes de un mes; si no tiene, los del mes anterior más cercano, indicando de cuál. |
+| `preview_initial_balance` | Vista previa del saldo inicial (no guarda nada). |
+| `load_initial_balance` | Carga el saldo inicial **una sola vez**; exige `confirm=true` (sin él solo muestra la vista previa). |
+| `list_bolsas` | Bolsas con su saldo: acumulable = saldo; consumo = disponible del mes actual. |
+
+- **Bolsas iniciales:** Necesidades (consumo), Ahorro (acumulable) y Gustos (consumo). Los
+  porcentajes los defines tú desde Claude, por ejemplo: "Define los porcentajes de este mes:
+  Necesidades 50, Ahorro 30, Gustos 20".
+- **Mes actual:** según `APP_TIMEZONE` (por defecto `America/Costa_Rica`).
+- **Saldo inicial:** pertenece al mes en que lo cargas y no cuenta como ingreso del mes. Revisa bien la
+  vista previa: no hay forma de borrarlo; un error se corrige con la anulación del Hito 5.
+- **Actualizar el homelab:** haz un [respaldo](#respaldo-manual-de-la-base), luego
+  `git pull`, `docker compose up -d --build` y `docker compose exec mcp alembic upgrade head`.
+
 ## Estructura
 
 ```text
@@ -414,7 +474,8 @@ src/puro_pockets/
 └── mcp/           # servidor MCP y tools
 migrations/        # Alembic
 tests/unit/        # pruebas unitarias
-tests/integration/ # pruebas con los servicios levantados
+tests/integration/ # pruebas con los servicios levantados (base temporal pp_test_*)
+tests/synthetic.py # datos sintéticos del invariante de integridad
 scripts/ping.py    # cliente de prueba
 ```
 

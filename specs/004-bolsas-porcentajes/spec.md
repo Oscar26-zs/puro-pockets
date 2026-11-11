@@ -42,21 +42,41 @@
   - `list_bolsas` muestra el saldo (11.2) de las acumulables y el disponible del mes actual (11.1) de
     las de consumo.
 
-**[PROPUESTO] por Claude (pendiente de tu confirmación):**
+**[DECIDIDO] al aprobar la spec y el plan (2026-11-10):**
 
-- **Mes del saldo inicial:** el mes actual (America/Costa_Rica) en el momento de la carga. En las
-  bolsas de consumo cuenta como asignado de ese mes; en el mes siguiente empiezan en cero (RN-11) y su
-  sobrante se resuelve en el cierre de mes (Hito 9). En las acumulables forma parte del saldo histórico
-  (RN-12).
-- **Montos del saldo inicial:** enteros ≥ 0 por bolsa activa, con total > 0; se pueden omitir bolsas
-  (cuentan como 0).
-- **Valores guardados** (comportamiento, tipo de ingreso, estado del reparto): los de la tabla
-  concepto → tabla del plan técnico (`consumo`, `acumulable`, `saldo_inicial`, `repartido`…).
-- **Corrección de un saldo inicial mal cargado:** requiere la anulación del Hito 5; hasta entonces no
-  hay forma de reemplazarlo desde Claude.
-- **Bolsas por nombre:** el propietario se refiere a las bolsas por su nombre (sin distinguir
-  mayúsculas); las respuestas no muestran identificadores internos.
-- Las decisiones técnicas [PROPUESTO] están en el plan ([plan.md](plan.md), Constitution Check).
+- **Mes del saldo inicial:** el mes actual (America/Costa_Rica) al cargarlo. En las bolsas de consumo
+  cuenta como asignado de ese mes; en el mes siguiente empiezan en cero (RN-11) y su sobrante se
+  resuelve en el cierre de mes (Hito 9). En las acumulables forma parte del saldo histórico (RN-12).
+- **Montos del saldo inicial:** enteros ≥ 0, total > 0; las bolsas omitidas cuentan como 0.
+- **Valores guardados:** los de la tabla concepto → tabla del plan técnico (`consumo`, `acumulable`,
+  `saldo_inicial`, `repartido`…).
+- **Salvaguardas del saldo inicial:** un saldo mal cargado solo se corrige con la anulación del
+  Hito 5. Además:
+  - `load_initial_balance` exige `confirm=true`; sin él devuelve la vista previa y no guarda nada;
+  - el índice único se diseña para que el Hito 5 permita una nueva carga tras anular;
+  - no existe ninguna tool ni script que borre el saldo inicial.
+- **Bolsas por nombre**, sin distinguir mayúsculas, sin identificadores internos en las respuestas. La
+  base garantiza que el nombre sea único sin distinguir mayúsculas.
+- **Protección de datos:** el downgrade de la migración de este hito se niega a correr si hay datos
+  (salvo `ALLOW_DESTRUCTIVE_DOWNGRADE=true`). El README advierte sobre `alembic downgrade` y
+  `docker compose down -v` y documenta un respaldo manual con `pg_dump`. El respaldo automático queda
+  para el Hito 11.
+
+**[PROPUESTO] por Claude:**
+
+- **Cuándo se materializa la herencia (RN-03):** al consultar, un mes sin porcentajes propios se
+  resuelve con el mes anterior más cercano que los tenga, sin guardar nada. Como los meses pasados no
+  se pueden editar, lo que un mes pasado heredó ya no puede cambiar: todos los meses anteriores a él
+  también están congelados. Cambiar el mes actual sí cambia lo que resuelven los meses futuros que aún
+  no tienen porcentajes propios; eso es la copia del mes anterior (RN-03) aplicada a meses que todavía
+  no empezaron. Desde el Hito 5, un ingreso repartido guarda en cada reparto el porcentaje usado, así
+  que el historial no cambia aunque cambien los porcentajes después.
+- **`set_allocation` para un mes pasado:** se rechaza con un error claro y no guarda nada (opción más
+  conservadora). Tampoco se permite "rellenar" un mes pasado que no tenía porcentajes propios.
+- **"Datos" para el downgrade protegido:** cualquier fila en `categories`, `budget_month_allocations`,
+  `incomes` o `income_allocations`, o bolsas distintas de las tres iniciales sin modificar.
+- Las decisiones técnicas [PROPUESTO] restantes están en el plan ([plan.md](plan.md), Constitution
+  Check).
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -133,6 +153,7 @@ ve el listado de bolsas con el saldo de cada una. Antes de guardar puede ver una
    se rechaza sin guardar nada.
 5. **Given** un saldo inicial cargado, **Then** no cuenta como ingreso del mes, pero sí forma parte de
    los saldos de las bolsas (RN-54).
+6. **Given** una carga sin `confirm=true`, **Then** devuelve la vista previa y no guarda nada.
 
 ---
 
@@ -174,7 +195,7 @@ cargar saldos iniciales sintéticos y comprobar el invariante.
 
 ### Functional Requirements
 
-- **FR-001**: La app MUST guardar bolsas con nombre único y comportamiento `consumo` o `acumulable`
+- **FR-001**: La app MUST guardar bolsas con nombre único (sin distinguir mayúsculas) y comportamiento `consumo` o `acumulable`
   (RN-10), con grupo opcional y estado activa/archivada. No existe una lista fija de tipos ni de
   bolsas en el código.
 - **FR-002**: Los datos iniciales MUST crear las bolsas Necesidades (`consumo`), Ahorro (`acumulable`)
@@ -192,8 +213,9 @@ cargar saldos iniciales sintéticos y comprobar el invariante.
   (RN-08).
 - **FR-008**: La app MUST permitir cargar el saldo inicial una sola vez, por montos explícitos en
   colones entre bolsas activas (RN-54), en una sola operación atómica (principio 3.6), con una vista
-  previa que no guarda nada (principio 3.2). La unicidad MUST garantizarse también ante dos cargas
-  simultáneas.
+  previa que no guarda nada (principio 3.2). La carga MUST exigir `confirm=true`; sin él devuelve la
+  vista previa. La unicidad MUST garantizarse también ante dos cargas simultáneas, y MUST NOT existir
+  tool ni script que borre el saldo inicial.
 - **FR-009**: El saldo inicial MUST quedar registrado como ingreso de tipo saldo inicial: MUST NOT
   contarse como ingreso del mes y MUST formar parte de los saldos de las bolsas (RN-54).
 - **FR-010**: Los saldos MUST calcularse a partir de los movimientos, nunca de un campo editable
@@ -214,6 +236,11 @@ cargar saldos iniciales sintéticos y comprobar el invariante.
 - **FR-016**: `docs/plan-tecnico.md` MUST registrar los nombres en inglés de las tablas de este hito en
   el esquema de referencia y en la tabla concepto → tabla, y `HITOS.md` MUST adelantar la prueba del
   invariante al Hito 4.
+- **FR-017**: El downgrade de la migración del hito MUST abortar si hay datos, salvo con
+  `ALLOW_DESTRUCTIVE_DOWNGRADE=true`; el README MUST advertir sobre `alembic downgrade` y
+  `docker compose down -v` y documentar un respaldo manual con `pg_dump` fuera del repositorio.
+- **FR-018**: Las pruebas de integración MUST usar una base temporal propia y MUST negarse a correr
+  contra cualquier otra base.
 
 ### Reglas citadas
 

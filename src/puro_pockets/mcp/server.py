@@ -16,7 +16,9 @@ from starlette.types import ASGIApp
 from puro_pockets.config import Settings
 from puro_pockets.domain.auth import LoginRateLimiter
 from puro_pockets.mcp.audit import OAuthAuditMiddleware
+from puro_pockets.mcp.budget_tools import register_budget_tools
 from puro_pockets.mcp.login import build_login_handler
+from puro_pockets.services.budget import BudgetService
 from puro_pockets.services.health import HealthService
 from puro_pockets.services.oauth import SCOPE_MCP, VALID_SCOPES, OwnerOAuthProvider
 from puro_pockets.services.passwords import PasswordVerifier
@@ -80,7 +82,11 @@ def build_auth_settings(provider: OwnerOAuthProvider, registration_enabled: bool
     )
 
 
-def build_server(health_service: HealthService, auth: AuthComponents | None = None) -> MCPServer:
+def build_server(
+    health_service: HealthService,
+    auth: AuthComponents | None = None,
+    budget: BudgetService | None = None,
+) -> MCPServer:
     if auth is None:
         server = MCPServer("puro-pockets")
     else:
@@ -98,6 +104,10 @@ def build_server(health_service: HealthService, auth: AuthComponents | None = No
         """Indica si el servidor MCP y la base de datos están operativos."""
         status = await health_service.check()
         return PingResult(server=status.server, database=status.database, detail=status.detail)
+
+    if budget is not None:
+        # Presupuesto (Hito 4). Con auth, todas las tools quedan detrás del token
+        register_budget_tools(server, budget)
 
     return server
 

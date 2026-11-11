@@ -29,8 +29,9 @@ reales):
 3. "¿Qué porcentajes tiene el mes siguiente?" → los de este mes, indicando que vienen de este mes.
 4. "Define 40/40/20 para el mes siguiente" y luego "¿y los de este mes?" → siguen en 50/30/20.
 5. "Muéstrame la vista previa del saldo inicial: …" → total y montos, sin guardar.
-6. "Carga el saldo inicial." → `list_bolsas` muestra el saldo de cada bolsa.
+6. "Carga el saldo inicial." (Claude llama con `confirm=true` tras tu confirmación) → `list_bolsas`
+   muestra el saldo de cada bolsa.
 7. "Carga otra vez el saldo inicial." → rechazo.
 
-Anota el resultado en `verificacion.md`. El saldo inicial es real y se carga **una sola vez**: revisa
+Anota el resultado en [verificacion.md](verificacion.md) (sección 3, homelab). El saldo inicial es real y se carga **una sola vez**: revisa
 bien la vista previa. Corregirlo requiere la anulación del Hito 5.

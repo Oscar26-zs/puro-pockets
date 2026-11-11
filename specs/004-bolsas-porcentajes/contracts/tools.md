@@ -62,7 +62,7 @@ Vista previa del saldo inicial (principio 3.2, RN-54). **No guarda nada.**
 
 **Entrada:** `amounts` (lista de `{pocket, amount}`). Las bolsas activas omitidas cuentan como 0.
 
-**Salida:** `month` (mes al que pertenecerá, [PROPUESTO]: el actual), `total`, `items` (lista de
+**Salida:** `month` (mes al que pertenecerá: el actual en America/Costa_Rica), `total`, `items` (lista de
 `{pocket, behavior, amount}` con todas las bolsas activas) y `already_loaded` (booleano; si es `true`,
 `load_initial_balance` lo rechazará).
 
@@ -72,9 +72,13 @@ Vista previa del saldo inicial (principio 3.2, RN-54). **No guarda nada.**
 
 Carga el saldo inicial, una sola vez, en una transacción (RN-54, principio 3.6).
 
-**Entrada:** igual que `preview_initial_balance`.
+**Entrada:** `amounts` (igual que `preview_initial_balance`) y `confirm` (booleano, por defecto
+`false`). Sin `confirm=true` no guarda nada y devuelve la vista previa.
 
-**Salida:** `month`, `total` e `items`, iguales a la vista previa.
+**Salida:** `saved` (booleano), `month`, `total`, `items` y `already_loaded`, con la misma forma que
+la vista previa. `saved` es `true` solo si se guardó.
+
+No existe ninguna tool ni script que borre el saldo inicial; se corrige con la anulación del Hito 5.
 
 **Errores:**
 

@@ -48,19 +48,21 @@ bolsas). Detalle en [data-model.md](data-model.md).
   - ✓ 3. Invariante: prueba automática desde este hito, el primero que registra dinero; `HITOS.md`
     corregido (v0.7).
   - ✓ 4. Pruebas del hito: unitarias e integración para cada escenario (sección "Pruebas").
-- **[PROPUESTO] que se asumen** (para tu confirmación):
-  1. **Mes del saldo inicial:** el mes actual (America/Costa_Rica) al cargarlo.
-  2. Montos del saldo inicial: enteros ≥ 0, total > 0; bolsas omitidas cuentan como 0.
-  3. Valores guardados según la tabla concepto → tabla (`consumo`, `acumulable`, `saldo_inicial`,
-     `repartido`…).
-  4. Corregir un saldo inicial mal cargado requiere la anulación del Hito 5.
-  5. Las tools identifican las bolsas por nombre, sin distinguir mayúsculas (research §5).
-  6. `tzdata` como dependencia directa (research §2).
-  7. Las pruebas de integración usan una base temporal propia, también la de migraciones
-     (research §7).
-  8. Prueba del invariante con un generador propio de 200 conjuntos sintéticos, sin `hypothesis`
-     (research §8).
-  9. El README advierte que `alembic downgrade` borra datos y no debe usarse en el homelab.
+- **Aprobado por el propietario (2026-11-10)**, antes [PROPUESTO]: mes del saldo inicial = mes actual
+  en America/Costa_Rica; montos ≥ 0 con total > 0; valores de la tabla concepto → tabla; corrección
+  solo con la anulación del Hito 5, con `confirm=true` obligatorio, índice preparado para recargar tras
+  anular y sin tool ni script que borre; bolsas por nombre con unicidad sin distinguir mayúsculas en la
+  base; `tzdata` directa; pruebas de integración en base temporal que se niegan a correr contra otra;
+  generador propio del invariante con semilla fija; downgrade protegido
+  (`ALLOW_DESTRUCTIVE_DOWNGRADE`), advertencias del README y respaldo manual con `pg_dump`.
+- **[PROPUESTO] que se asumen**:
+  1. Herencia RN-03 resuelta al consultar; los meses pasados están congelados, así que lo que heredaron
+     no cambia; `set_allocation` sobre un mes pasado se rechaza (ver spec, resumen).
+  2. "Datos" para el downgrade protegido: filas en `categories`, `budget_month_allocations`,
+     `incomes` o `income_allocations`, o bolsas distintas de las tres iniciales sin modificar.
+  3. La base temporal de pruebas se llama `pp_test_<aleatorio>`; las pruebas que tocan la base
+     verifican ese prefijo y que sea la base que ellas crearon. Las pruebas existentes que solo
+     consultan el contenedor (`ping`, encabezados) siguen apuntando al servicio local.
 - **[ABIERTO] de los que depende**: ninguno.
 
 ## Project Structure
@@ -91,7 +93,7 @@ src/puro_pockets/mcp/server.py             # registra las tools (build_server re
 src/puro_pockets/__main__.py, config.py    # wiring y APP_TIMEZONE
 migrations/versions/0003_budget.py         # tablas, índice y datos iniciales
 docker-compose.yml, .env.example           # APP_TIMEZONE
-README.md                                  # sección del Hito 4 y advertencia sobre downgrade
+README.md                                  # Hito 4, advertencias (downgrade, down -v) y respaldo con pg_dump
 tests/fakes.py                             # InMemoryBudgetStore
 tests/synthetic.py                         # generador de datos sintéticos (semilla reproducible)
 tests/unit/test_months.py, test_allocation.py, test_initial_balance.py, test_balances.py
@@ -114,6 +116,7 @@ tests/integration/test_migrations.py       # head = 0003_budget; usa la base tem
 | US2-2, US2-3: herencia del mes anterior sin guardar; sin porcentajes | `test_allocation.py`, `test_budget_sql_store.py` |
 | US3-1: vista previa sin guardar | `test_budget_service.py`, `test_budget_sql_store.py` |
 | US3-2, SC-002: carga atómica y `list_bolsas` | `test_budget_service.py`, `test_budget_sql_store.py`, `test_budget_tools.py` |
+| US3-6: sin `confirm=true` solo vista previa | `test_budget_service.py`, `test_budget_tools.py` |
 | US3-3, SC-002: segunda carga y cargas simultáneas rechazadas | `test_budget_service.py`, `test_budget_sql_store.py` (dos conexiones) |
 | US3-4: montos inválidos | `test_initial_balance.py` |
 | US3-5: no cuenta como ingreso del mes, sí en saldos | `test_balances.py` |
@@ -121,9 +124,10 @@ tests/integration/test_migrations.py       # head = 0003_budget; usa la base tem
 | US4-4, SC-005: invariante con 200 conjuntos sintéticos | `test_invariant.py` (memoria), `test_invariant_sql.py` (Postgres) |
 | Edge: consumo en otro mes empieza en cero (RN-11); acumulable conserva (RN-12) | `test_balances.py` |
 | Edge: sin token → 401 | `test_budget_tools.py` |
-| FR-014: registros sin montos | `test_budget_service.py` (captura de registros) |
+| FR-014: registros y mensajes de error sin montos | `test_budget_service.py`, `test_budget_tools.py` (captura de registros) |
 | FR-012: dominio sin MCP ni base | `test_architecture.py` (existente) |
-| Migración reversible y datos iniciales | `test_migrations.py` |
+| Migración reversible, datos iniciales, downgrade protegido, nombre único sin mayúsculas | `test_migrations.py`, `test_budget_sql_store.py` |
+| FR-018: las pruebas se niegan a correr fuera de la base temporal | `test_temp_database_guard.py` (unitaria) |
 | Desde Claude (quickstart) | manual del propietario, en `verificacion.md` |
 
 ## Actualización del plan técnico al cerrar

@@ -7,14 +7,17 @@
 
 | Tabla | Columnas | Restricciones |
 |---|---|---|
-| `pockets` | `id`, `name`, `behavior`, `group_name`, `surplus_target_pocket_id`, `active`, `created_at` | `name` único; `behavior IN ('consumo','acumulable')` (RN-10); `active` por defecto `TRUE` |
-| `categories` | `id`, `name`, `pocket_id`, `active` | `name` único; FK a `pockets` |
+| `pockets` | `id`, `name`, `behavior`, `group_name`, `surplus_target_pocket_id`, `active`, `created_at` | `name` único sin distinguir mayúsculas (índice sobre `lower(name)`); `behavior IN ('consumo','acumulable')` (RN-10); `active` por defecto `TRUE` |
+| `categories` | `id`, `name`, `pocket_id`, `active` | `name` único sin distinguir mayúsculas; FK a `pockets` |
 | `budget_month_allocations` | `month`, `pocket_id`, `percentage` | PK (`month`, `pocket_id`); `month` `CHAR(7)` con `CHECK '^[0-9]{4}-(0[1-9]\|1[0-2])$'`; `percentage` entero 0 a 100 |
 | `incomes` | `id`, `income_date`, `kind`, `source`, `budget_month`, `amount`, `allocation_status`, `note`, `created_at` | `kind IN ('base','extra','saldo_inicial')`; `amount > 0` (colones); `allocation_status IN ('pendiente','repartido')`; índice único parcial: un solo `saldo_inicial` (RN-54) |
 | `income_allocations` | `id`, `income_id`, `pocket_id`, `percentage`, `amount` | `amount >= 0`; `percentage` NULL en el saldo inicial; único (`income_id`, `pocket_id`) |
 
 **Datos iniciales** (en la migración, editables): Necesidades (`consumo`), Ahorro (`acumulable`),
 Gustos (`consumo`), en ese orden. Sin porcentajes ni categorías.
+
+**Downgrade protegido:** `0003_budget` aborta el downgrade si hay datos (spec, resumen), salvo con
+`ALLOW_DESTRUCTIVE_DOWNGRADE=true`.
 
 **Hito 5** agrega a `incomes`, con su propia migración: `currency`, `original_amount`,
 `exchange_rate`, `voided`, `voided_at`, `void_reason` (ver [research.md](research.md) §4).
