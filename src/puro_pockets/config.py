@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import zoneinfo
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -14,6 +15,9 @@ DEFAULT_REDIRECT_URIS = (
 # Duraciones (segundos): normales y modo corto para probar el refresco (OAUTH_SHORT_LIFETIMES=true)
 NORMAL_LIFETIMES = {"access": 3600, "refresh": 30 * 24 * 3600, "code": 300}
 SHORT_LIFETIMES = {"access": 120, "refresh": 900, "code": 300}
+
+# Zona del propietario: define el "mes actual" (Hito 4)
+DEFAULT_TIMEZONE = "America/Costa_Rica"
 
 
 class ConfigError(RuntimeError):
@@ -39,6 +43,8 @@ class Settings:
     oauth_access_token_ttl: int = NORMAL_LIFETIMES["access"]
     oauth_refresh_token_ttl: int = NORMAL_LIFETIMES["refresh"]
     oauth_auth_code_ttl: int = NORMAL_LIFETIMES["code"]
+    # Presupuesto (Hito 4)
+    app_timezone: str = DEFAULT_TIMEZONE
 
 
 def _required(env: Mapping[str, str], name: str) -> str:
@@ -70,6 +76,17 @@ def _bool(env: Mapping[str, str], name: str, default: bool) -> bool:
     if raw in ("false", "0", "no"):
         return False
     raise ConfigError(f"La variable {name} debe ser true o false.")
+
+
+def _timezone(env: Mapping[str, str], name: str) -> str:
+    value = env.get(name, "").strip() or DEFAULT_TIMEZONE
+    try:
+        zoneinfo.ZoneInfo(value)
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+        raise ConfigError(
+            f"La variable {name} debe ser una zona horaria válida (por ejemplo {DEFAULT_TIMEZONE})."
+        ) from None
+    return value
 
 
 def _csv(env: Mapping[str, str], name: str) -> tuple[str, ...]:
@@ -105,4 +122,5 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         oauth_access_token_ttl=_int(env, "OAUTH_ACCESS_TOKEN_TTL_SECONDS", lifetimes["access"]),
         oauth_refresh_token_ttl=_int(env, "OAUTH_REFRESH_TOKEN_TTL_SECONDS", lifetimes["refresh"]),
         oauth_auth_code_ttl=_int(env, "OAUTH_AUTH_CODE_TTL_SECONDS", lifetimes["code"]),
+        app_timezone=_timezone(env, "APP_TIMEZONE"),
     )

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from puro_pockets.domain.balances import AllocationEntry, IncomeKind
+from puro_pockets.domain.errors import InitialBalanceAlreadyLoaded
+from puro_pockets.domain.pockets import Behavior, Pocket
 from puro_pockets.services.oauth import CodeRecord, TokenRecord
 
 
@@ -85,3 +88,58 @@ class FakeClock:
 
     def advance(self, seconds: float) -> None:
         self.now += seconds
+
+
+class InMemoryBudgetStore:
+    """Almacén del presupuesto en memoria con la misma semántica que el almacén SQL."""
+
+    def __init__(self, pockets=None) -> None:
+        self.pockets = list(
+            pockets
+            if pockets is not None
+            else [
+                Pocket(1, "Necesidades", Behavior.CONSUMO),
+                Pocket(2, "Ahorro", Behavior.ACUMULABLE),
+                Pocket(3, "Gustos", Behavior.CONSUMO),
+            ]
+        )
+        self.allocations = {}  # Month -> {pocket_id: percentage}
+        self.incomes = []  # (id, kind, income_date, budget_month, amount)
+        self.lines = []  # (income_id, AllocationLine)
+        self.writes = 0
+
+    def list_pockets(self):
+        return sorted(self.pockets, key=lambda p: p.id)
+
+    def allocation_months(self, up_to):
+        return sorted(m for m in self.allocations if m <= up_to)
+
+    def allocation_rows(self, month):
+        return dict(self.allocations.get(month, {}))
+
+    def replace_allocation(self, month, rows):
+        self.writes += 1
+        self.allocations[month] = dict(rows)
+
+    def has_initial_balance(self):
+        return any(kind is IncomeKind.INITIAL_BALANCE for _, kind, *_ in self.incomes)
+
+    def record_distributed_income(self, kind, income_date, budget_month, lines):
+        if kind is IncomeKind.INITIAL_BALANCE and self.has_initial_balance():
+            raise InitialBalanceAlreadyLoaded()
+        self.writes += 1
+        income_id = len(self.incomes) + 1
+        amount = sum(line.amount for line in lines)
+        self.incomes.append((income_id, kind, income_date, budget_month, amount))
+        self.lines.extend((income_id, line) for line in lines)
+        return income_id
+
+    def allocation_entries(self):
+        info = {i[0]: i for i in self.incomes}
+        return [
+            AllocationEntry(line.pocket_id, info[iid][3], line.amount, info[iid][1])
+            for iid, line in self.lines
+        ]
+
+    def distributed_income_total(self):
+        return sum(i[4] for i in self.incomes)

@@ -9,15 +9,27 @@ from functools import partial
 from sqlalchemy import Engine
 
 from puro_pockets.config import ConfigError, Settings, load_settings
+from puro_pockets.db.budget_store import SqlBudgetStore
 from puro_pockets.db.engine import check_database, create_engine_from_settings
 from puro_pockets.db.oauth_store import SqlOAuthStore
 from puro_pockets.domain.auth import LoginRateLimiter
 from puro_pockets.mcp.server import AuthComponents, build_server, run_server
+from puro_pockets.services.budget import BudgetService, local_today
 from puro_pockets.services.health import HealthService
 from puro_pockets.services.oauth import OAuthConfig, OwnerOAuthProvider
 from puro_pockets.services.passwords import PasswordVerifier
 
 logger = logging.getLogger("puro_pockets")
+
+# Bibliotecas que en DEBUG registran los cuerpos completos de las respuestas (montos y saldos):
+# se fijan en INFO aunque se suba el nivel general (FR-014, principio 3.10)
+BODY_LOGGERS = ("sse_starlette", "mcp.server.streamable_http")
+
+
+def configure_logging() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    for name in BODY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.INFO)
 
 
 def oauth_config(settings: Settings) -> OAuthConfig:
@@ -62,7 +74,7 @@ def build_auth(settings: Settings, engine: Engine) -> AuthComponents:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    configure_logging()
     try:
         settings = load_settings()
     except ConfigError as exc:
@@ -74,7 +86,9 @@ def main() -> None:
     health = HealthService(
         partial(check_database, engine), timeout_seconds=settings.db_connect_timeout + 1
     )
-    run_server(build_server(health, build_auth(settings, engine)), settings)
+    budget = BudgetService(SqlBudgetStore(engine), today=local_today(settings.app_timezone))
+    logger.info("Presupuesto: zona horaria=%s", settings.app_timezone)
+    run_server(build_server(health, build_auth(settings, engine), budget), settings)
 
 
 if __name__ == "__main__":

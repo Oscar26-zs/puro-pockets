@@ -1,7 +1,7 @@
 # Plan técnico de Puro Pockets
 
-**Versión:** 0.5
-**Fecha:** 2026-11-09
+**Versión:** 0.6
+**Fecha:** 2026-11-10
 **Capa:** 2 en la gobernanza de `.specify/memory/constitution.md`. Decide la técnica; si contradice a
 la constitución, gana la constitución y se corrige este documento.
 
@@ -44,6 +44,9 @@ esquema o la arquitectura.
   devuelven las tools).
 - El esquema de referencia de la sección 17 y la tabla concepto → tabla todavía usan nombres del
   borrador en español; se pasan al inglés antes de crear cada tabla.
+- **"Bolsa" en el código [DECIDIDO] (Hito 4):** `pocket` en tablas, columnas y código (`pockets`,
+  `pocket_id`). Las tools conservan los nombres del catálogo de la sección 12.1 (`list_bolsas`,
+  `create_bolsa`, `get_bolsa_status`…), porque "bolsa" es el término del glosario.
 
 ### Actualizar el SDK de MCP
 
@@ -156,6 +159,30 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
 - **Observaciones del SDK:** el endpoint `/revoke` exige `client_secret` aunque sea vacío para clientes
   públicos (defecto de `RevocationRequest`); se deja documentado y cubierto por una prueba que avisará
   cuando se corrija. La comparación de PKCE y los metadatos `client_secret_*` se dejan como están.
+
+### Presupuesto [DECIDIDO] (Hito 4)
+
+- **Código:** `domain/months.py` (mes `YYYY-MM`), `domain/pockets.py` (comportamientos, nombres sin
+  distinguir mayúsculas), `domain/allocation.py` (RN-01, RN-03, RN-08), `domain/initial_balance.py`
+  (RN-54), `domain/balances.py` (11.1, 11.2 y comprobación del invariante 11.4),
+  `services/budget.py`, `db/budget_store.py` y `mcp/budget_tools.py`. Migración `0003_budget`.
+- **Mes actual:** `APP_TIMEZONE` (por defecto `America/Costa_Rica`, con `zoneinfo`; `tzdata` es
+  dependencia directa para Windows).
+- **Herencia de porcentajes (RN-03):** se resuelve al consultar, sin guardar nada. Solo se editan el
+  mes actual y los futuros, así que lo que un mes pasado heredó no cambia.
+- **Saldo inicial:** `load_initial_balance` exige `confirm=true`; índice único parcial
+  `ux_incomes_single_initial_balance` (el Hito 5 lo recrea excluyendo los anulados). No existe tool
+  ni script que lo borre.
+- **Errores:** las reglas lanzan `DomainError` y las tools lo devuelven como `ToolError` (is_error,
+  mensaje en español). El SDK registra ese mensaje, así que los mensajes nunca incluyen montos. Las
+  bibliotecas que en DEBUG registran cuerpos de respuesta (`sse_starlette`,
+  `mcp.server.streamable_http`) quedan fijadas en INFO.
+- **Downgrade protegido:** `0003_budget` aborta el downgrade si hay datos, salvo con
+  `ALLOW_DESTRUCTIVE_DOWNGRADE=true`.
+- **Pruebas de integración:** base temporal `pp_test_<aleatorio>` creada y borrada por las pruebas;
+  se niegan a correr contra cualquier otra base. El invariante se prueba con 200 conjuntos sintéticos
+  en memoria y 40 en Postgres (`tests/synthetic.py`, semilla fija).
+
 ---
 
 ## 12. Integración con Claude (MCP)
@@ -164,7 +191,9 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
 
 | Tool | Función | Estado |
 |---|---|---|
+| `preview_initial_balance` | Vista previa del saldo inicial (total y monto por bolsa) sin guardar nada (principio 3.2). | [DECIDIDO] (Hito 4) |
 | `load_initial_balance` | Cargar el saldo inicial repartido por montos entre bolsas (una sola vez). | [DECIDIDO] |
+| `list_bolsas` | Listar las bolsas activas con su comportamiento y su saldo (acumulable, 11.2) o disponible del mes actual (consumo, 11.1). | [DECIDIDO] (Hito 4) |
 | `add_expense` | Registrar gasto (con moneda y, si es USD, tipo de cambio). Si deja una bolsa en negativo, devuelve advertencia con las bolsas disponibles. | [DECIDIDO] |
 | `add_income` | Registrar ingreso base (con moneda y tipo de cambio si aplica). | [DECIDIDO] |
 | `register_extra_income` | Registrar ingreso extra en estado pendiente. | [DECIDIDO] |
@@ -177,6 +206,7 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
 | `list_transactions` | Listar movimientos con filtros. | [DECIDIDO] |
 | `manage_recurring` | Crear, listar y modificar gastos fijos. | [DECIDIDO] |
 | `set_allocation` / `update_allocation` | Cambiar porcentajes de un mes. | [DECIDIDO] |
+| `get_allocation` | Consultar los porcentajes de un mes; si no tiene, los del mes anterior más cercano indicando su origen (RN-03). | [DECIDIDO] (Hito 4) |
 | `preview_rebalance` | Calcular reajuste de porcentajes sin guardar. | [DECIDIDO] |
 | `create_bolsa` | Crear bolsa y reajustar porcentajes (atómico). | [DECIDIDO] |
 | `archive_bolsa` | Archivar bolsa (exige saldo cero, mediante transferencia previa) y redistribuir porcentaje. | [DECIDIDO] |
@@ -253,65 +283,70 @@ Consolida y reemplaza los borradores anteriores. Es una propuesta técnica: pued
 Convenciones de tipos: identificadores y montos en `BIGINT`; banderas en `BOOLEAN`; fechas de calendario en `DATE`; instantes en `TIMESTAMPTZ`; el mes se guarda como texto de 7 caracteres `'YYYY-MM'` con un `CHECK` de formato.
 
 ```sql
--- Bolsas flexibles
-CREATE TABLE bolsas (
-  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  nombre TEXT NOT NULL UNIQUE,
-  comportamiento TEXT NOT NULL CHECK (comportamiento IN ('consumo','acumulable')),
-  grupo TEXT,                                          -- opcional, solo estadísticas
-  destino_sobrante_id BIGINT REFERENCES bolsas(id),    -- opcional; debe ser acumulable (se valida en código)
-  activa BOOLEAN NOT NULL DEFAULT TRUE
+-- Bolsas (Hito 4, migración 0003). "Bolsa" = pocket en el código
+CREATE TABLE pockets (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,  -- también fija el orden de creación (RN-08)
+  name TEXT NOT NULL,                                  -- único sin distinguir mayúsculas (índice abajo)
+  behavior TEXT NOT NULL CHECK (behavior IN ('consumo','acumulable')),
+  group_name TEXT,                                     -- opcional, solo estadísticas
+  surplus_target_pocket_id BIGINT REFERENCES pockets(id),  -- opcional; debe ser acumulable (se valida en código)
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE categorias (
-  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  nombre TEXT NOT NULL UNIQUE,
-  bolsa_id BIGINT NOT NULL REFERENCES bolsas(id),
-  activa BOOLEAN NOT NULL DEFAULT TRUE
-);
+CREATE UNIQUE INDEX ux_pockets_name_ci ON pockets (lower(name));
 
--- Porcentajes por mes (historial). La app valida que cada mes sume 100.
+CREATE TABLE categories (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  name TEXT NOT NULL,
+  pocket_id BIGINT NOT NULL REFERENCES pockets(id),
+  active BOOLEAN NOT NULL DEFAULT TRUE
+);
+CREATE UNIQUE INDEX ux_categories_name_ci ON categories (lower(name));
+
+-- Porcentajes por mes (historial). La app valida que cada mes sume 100 (RN-01).
 CREATE TABLE budget_month_allocations (
-  mes CHAR(7) NOT NULL CHECK (mes ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),  -- 'YYYY-MM'
-  bolsa_id BIGINT NOT NULL REFERENCES bolsas(id),
-  porcentaje INTEGER NOT NULL CHECK (porcentaje BETWEEN 0 AND 100),
-  PRIMARY KEY (mes, bolsa_id)
+  month CHAR(7) NOT NULL CHECK (month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),  -- 'YYYY-MM'
+  pocket_id BIGINT NOT NULL REFERENCES pockets(id),
+  percentage INTEGER NOT NULL CHECK (percentage BETWEEN 0 AND 100),
+  PRIMARY KEY (month, pocket_id)
 );
 
--- Ingresos (incluye el saldo inicial como registro especial)
-CREATE TABLE ingresos (
+-- Ingresos (incluye el saldo inicial como registro especial). Hito 4: solo colones.
+CREATE TABLE incomes (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  fecha DATE NOT NULL,
-  tipo TEXT NOT NULL CHECK (tipo IN ('base','extra','saldo_inicial')),
-  fuente TEXT,
-  mes_presupuesto CHAR(7) NOT NULL                     -- salario de fin de mes -> mes siguiente
-    CHECK (mes_presupuesto ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
-  moneda TEXT NOT NULL DEFAULT 'CRC' CHECK (moneda IN ('CRC','USD')),
-  monto_original BIGINT NOT NULL CHECK (monto_original > 0),  -- CRC: colones; USD: centavos
-  tipo_cambio BIGINT,                                  -- colones por USD x100; NULL si moneda = CRC
-  monto BIGINT NOT NULL CHECK (monto > 0),             -- equivalente en colones (base de todos los cálculos)
-  estado_reparto TEXT NOT NULL DEFAULT 'pendiente'
-    CHECK (estado_reparto IN ('pendiente','repartido')),
-  nota TEXT,
-  anulado BOOLEAN NOT NULL DEFAULT FALSE,
-  anulado_en TIMESTAMPTZ,
-  motivo_anulacion TEXT,
-  CHECK ((moneda = 'CRC' AND tipo_cambio IS NULL) OR (moneda = 'USD' AND tipo_cambio IS NOT NULL))
+  income_date DATE NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('base','extra','saldo_inicial')),
+  source TEXT,
+  budget_month CHAR(7) NOT NULL                        -- salario de fin de mes -> mes siguiente
+    CHECK (budget_month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+  amount BIGINT NOT NULL CHECK (amount > 0),           -- colones (base de todos los cálculos)
+  allocation_status TEXT NOT NULL DEFAULT 'pendiente'
+    CHECK (allocation_status IN ('pendiente','repartido')),
+  note TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  -- Hito 5 (migración propia): currency ('CRC','USD', por defecto 'CRC'), original_amount
+  -- (CRC: colones; USD: centavos; se rellena con amount en las filas existentes), exchange_rate
+  -- (colones por USD x100; NULL si CRC), voided, voided_at, void_reason y el CHECK de moneda.
 );
+-- Un solo saldo inicial (RN-54). En el Hito 5 se recrea con "AND NOT voided".
+CREATE UNIQUE INDEX ux_incomes_single_initial_balance
+  ON incomes (kind) WHERE kind = 'saldo_inicial';
 
 -- Reparto de cada ingreso por bolsa
 CREATE TABLE income_allocations (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  ingreso_id BIGINT NOT NULL REFERENCES ingresos(id),
-  bolsa_id BIGINT NOT NULL REFERENCES bolsas(id),
-  porcentaje INTEGER CHECK (porcentaje BETWEEN 0 AND 100),  -- NULL en el saldo inicial (monto explícito)
-  monto BIGINT NOT NULL CHECK (monto >= 0)             -- colones; la última bolsa absorbe el residuo
+  income_id BIGINT NOT NULL REFERENCES incomes(id),
+  pocket_id BIGINT NOT NULL REFERENCES pockets(id),
+  percentage INTEGER CHECK (percentage BETWEEN 0 AND 100),  -- NULL en el saldo inicial (monto explícito)
+  amount BIGINT NOT NULL CHECK (amount >= 0),          -- colones; la última bolsa absorbe el residuo
+  UNIQUE (income_id, pocket_id)
 );
 
 -- Metas: objetivo asociado a una bolsa acumulable. No guardan dinero ni avance.
 CREATE TABLE savings_goals (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  bolsa_id BIGINT NOT NULL REFERENCES bolsas(id),      -- debe ser acumulable (se valida en create_goal)
+  bolsa_id BIGINT NOT NULL REFERENCES pockets(id),      -- debe ser acumulable (se valida en create_goal)
   nombre TEXT NOT NULL,
   monto_objetivo BIGINT NOT NULL CHECK (monto_objetivo > 0),  -- en colones
   fecha_objetivo DATE,                                 -- opcional
@@ -329,8 +364,8 @@ CREATE TABLE gastos (
   fecha DATE NOT NULL,
   mes CHAR(7) NOT NULL                                 -- mes calendario de la fecha
     CHECK (mes ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
-  bolsa_id BIGINT NOT NULL REFERENCES bolsas(id),
-  categoria_id BIGINT REFERENCES categorias(id),
+  bolsa_id BIGINT NOT NULL REFERENCES pockets(id),
+  categoria_id BIGINT REFERENCES categories(id),
   descripcion TEXT,
   moneda TEXT NOT NULL DEFAULT 'CRC' CHECK (moneda IN ('CRC','USD')),
   monto_original BIGINT NOT NULL CHECK (monto_original > 0),
@@ -349,8 +384,8 @@ CREATE TABLE gastos_recurrentes (
   moneda TEXT NOT NULL DEFAULT 'CRC' CHECK (moneda IN ('CRC','USD')),
   monto_original BIGINT NOT NULL CHECK (monto_original > 0),
   dia_del_mes INTEGER NOT NULL CHECK (dia_del_mes BETWEEN 1 AND 31),
-  bolsa_id BIGINT NOT NULL REFERENCES bolsas(id),
-  categoria_id BIGINT REFERENCES categorias(id),
+  bolsa_id BIGINT NOT NULL REFERENCES pockets(id),
+  categoria_id BIGINT REFERENCES categories(id),
   activo BOOLEAN NOT NULL DEFAULT TRUE
 );
 
@@ -360,8 +395,8 @@ CREATE TABLE transfers (
   fecha DATE NOT NULL,
   mes CHAR(7) NOT NULL                                 -- mes presupuestario
     CHECK (mes ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
-  from_bolsa_id BIGINT NOT NULL REFERENCES bolsas(id),
-  to_bolsa_id BIGINT NOT NULL REFERENCES bolsas(id),
+  from_bolsa_id BIGINT NOT NULL REFERENCES pockets(id),
+  to_bolsa_id BIGINT NOT NULL REFERENCES pockets(id),
   monto BIGINT NOT NULL CHECK (monto > 0),
   motivo TEXT NOT NULL CHECK (motivo IN
     ('cubrir_sobregasto','reasignacion','cierre_de_mes','ajuste')),
@@ -380,7 +415,7 @@ CREATE TABLE month_closures (
 CREATE TABLE closure_adjustments (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   mes CHAR(7) NOT NULL REFERENCES month_closures(mes),
-  bolsa_id BIGINT NOT NULL REFERENCES bolsas(id),
+  bolsa_id BIGINT NOT NULL REFERENCES pockets(id),
   tipo TEXT NOT NULL CHECK (tipo IN ('sobrante_no_destinado','sobregasto_no_cubierto')),
   monto BIGINT NOT NULL                                -- con signo: sobrante +, sobregasto -
 );
@@ -391,7 +426,7 @@ CREATE TABLE closure_adjustments (
 **Cambios respecto a v0.1:** se eliminan `goal_movements` y los campos `goal_id` de `gastos` y `transfers` (la meta ya no tiene dinero propio); se agregan campos de moneda, anulación y saldo inicial; se agrega `fecha_logro` a las metas.
 
 **Validaciones que viven en el código (no en el esquema):**
-- Cada mes suma 100 % en `budget_month_allocations` (RN-01).
+- Cada mes suma 100 % en `budget_month_allocations` (RN-01), con cada bolsa activa exactamente una vez.
 - Las metas solo se asocian a bolsas `acumulable` (RN-21).
 - No se transfiere más del saldo o disponible de la bolsa de origen (RN-42).
 - Un mes cerrado no admite movimientos nuevos ni anulaciones (RN-44, RN-48, RN-53).
@@ -409,20 +444,20 @@ esquema de la sección 17, con los valores que se guardan para estados, tipos y 
 
 | Concepto (constitución) | Tabla / columna | Valores que se guardan |
 |---|---|---|
-| Bolsa | `bolsas` | — |
-| Comportamiento de la bolsa (RN-10) | `bolsas.comportamiento` | `consumo`, `acumulable` |
-| Bolsa inactiva (archivada, RN-16) | `bolsas.activa` | `TRUE` activa, `FALSE` archivada |
-| Grupo de la bolsa | `bolsas.grupo` | texto libre u omitido |
-| Destino de sobrante sugerido (6.5) | `bolsas.destino_sobrante_id` | id de una bolsa acumulable u omitido |
-| Categoría | `categorias` (`activa`) | `TRUE`, `FALSE` |
-| Los porcentajes de cada mes (RN-01 a 03) | `budget_month_allocations` | `porcentaje` entre 0 y 100 |
-| Ingreso | `ingresos` | — |
-| Tipo de ingreso: base, extra, saldo inicial (5.1, 5.3, RN-54) | `ingresos.tipo` | `base`, `extra`, `saldo_inicial` |
-| Mes presupuestario (5.1, RN-09) | `ingresos.mes_presupuesto` | `'YYYY-MM'` |
-| Estado del reparto de un ingreso (RN-06) | `ingresos.estado_reparto` | `pendiente`, `repartido` |
+| Bolsa | `pockets` | — |
+| Comportamiento de la bolsa (RN-10) | `pockets.behavior` | `consumo`, `acumulable` |
+| Bolsa inactiva (archivada, RN-16) | `pockets.active` | `TRUE` activa, `FALSE` archivada |
+| Grupo de la bolsa | `pockets.group_name` | texto libre u omitido |
+| Destino de sobrante sugerido (6.5) | `pockets.surplus_target_pocket_id` | id de una bolsa acumulable u omitido |
+| Categoría | `categories` (`active`) | `TRUE`, `FALSE` |
+| Los porcentajes de cada mes (RN-01 a 03) | `budget_month_allocations` (`month`, `pocket_id`, `percentage`) | `percentage` entero entre 0 y 100 |
+| Ingreso | `incomes` | — |
+| Tipo de ingreso: base, extra, saldo inicial (5.1, 5.3, RN-54) | `incomes.kind` | `base`, `extra`, `saldo_inicial` |
+| Mes presupuestario (5.1, RN-09) | `incomes.budget_month` | `'YYYY-MM'` |
+| Estado del reparto de un ingreso (RN-06) | `incomes.allocation_status` | `pendiente`, `repartido` |
 | Moneda (RN-55) | `ingresos.moneda`, `gastos.moneda`, `gastos_recurrentes.moneda` | `CRC`, `USD` |
 | Monto original y tipo de cambio (RN-57) | `monto_original`, `tipo_cambio`, `monto` | CRC en colones; USD en centavos; tipo de cambio en colones por USD × 100 |
-| Lo asignado a la bolsa por los ingresos del mes (11.1) | `income_allocations.monto` | colones enteros |
+| Lo asignado a la bolsa por los ingresos del mes (11.1) | `income_allocations.amount` | colones enteros |
 | Gasto | `gastos` | — |
 | Mes calendario del gasto (RN-32) | `gastos.mes` | `'YYYY-MM'` |
 | Anulación con registro (RN-53) | `anulado`, `anulado_en`, `motivo_anulacion` en `ingresos` y `gastos` | `anulado`: `TRUE`, `FALSE` |
@@ -434,9 +469,10 @@ esquema de la sección 17, con los valores que se guardan para estados, tipos y 
 | Estado del mes (RN-49) | `month_closures.estado` | `abierto`, `cerrado` |
 | Ajustes de cierre (RN-50, 10.2) | `closure_adjustments.tipo` | `sobrante_no_destinado`, `sobregasto_no_cubierto` |
 
-**Idioma de los nombres:** decidido en el Hito 1: inglés (ver "Convención de idioma"). Los nombres
-de esta tabla y de la sección 17 son los del borrador de referencia y se pasan al inglés antes de
-crear cada tabla.
+**Idioma de los nombres:** decidido en el Hito 1: inglés (ver "Convención de idioma"). Ya están en
+inglés las tablas del Hito 4 (`pockets`, `categories`, `budget_month_allocations`, `incomes`,
+`income_allocations`); el resto conserva los nombres del borrador y se pasa al inglés antes de crear
+cada tabla. Los **valores** guardados (columna de la derecha) se mantienen como están.
 
 ---
 
@@ -449,3 +485,4 @@ crear cada tabla.
 | 0.3 | 2026-11-09 | Cierre del Hito 1: Python 3.14 y uv 0.12.5 fijados, driver psycopg 3 en modo síncrono, confirmación del SDK al implementar, medición de memoria en el equipo de desarrollo, estructura del código y servicios de Compose. |
 | 0.4 | 2026-11-09 | Hito 2: dominio `puropockets.space` y subdominio `mcp.puropockets.space`; túnel de Cloudflare como servicio de Compose (perfil `tunnel`, cloudflared 2026.10.3); hosts y orígenes públicos permitidos; reinicio automático y healthchecks. |
 | 0.5 | 2026-11-09 | Hito 3: servidor de autorización OAuth propio (decisión pendiente resuelta), endpoints, clientes, duraciones, scopes, tablas `0002_oauth`, argon2, límite de intentos y revocación. |
+| 0.6 | 2026-11-10 | Hito 4: `pocket` como nombre de "bolsa" en tablas y código (las tools conservan sus nombres); se agregan al catálogo `preview_initial_balance` (principio 3.2), `list_bolsas` y `get_allocation`; nombres en inglés de `pockets`, `categories`, `budget_month_allocations`, `incomes` e `income_allocations` en la sección 17 y en la tabla concepto → tabla (nombres únicos sin distinguir mayúsculas); `incomes` se crea en el Hito 4 sin moneda ni anulación (llegan en el Hito 5 con su propia migración) y con índice único para el saldo inicial; sección "Presupuesto (Hito 4)": `APP_TIMEZONE`, estructura del código, salvaguardas y pruebas. |

@@ -135,3 +135,14 @@ def test_oauth_booleano_invalido_no_muestra_el_valor():
         load_settings({"DATABASE_URL": DB_URL, "OAUTH_REGISTRATION_ENABLED": "quizas"})
     assert "OAUTH_REGISTRATION_ENABLED" in str(exc.value)
     assert "quizas" not in str(exc.value)
+
+
+def test_zona_horaria_por_defecto_y_configurable():
+    assert load_settings({"DATABASE_URL": "x"}).app_timezone == "America/Costa_Rica"
+    settings = load_settings({"DATABASE_URL": "x", "APP_TIMEZONE": "America/Mexico_City"})
+    assert settings.app_timezone == "America/Mexico_City"
+
+
+def test_zona_horaria_invalida_da_error_claro():
+    with pytest.raises(ConfigError, match="APP_TIMEZONE"):
+        load_settings({"DATABASE_URL": "x", "APP_TIMEZONE": "Marte/Olympus"})
