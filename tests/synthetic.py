@@ -2,8 +2,9 @@
 
 Nunca usa datos reales. Cada conjunto sale de una semilla fija, que las pruebas imprimen al fallar
 para reproducir el caso. Desde el Hito 5: salarios en CRC y USD, gastos (con sobregastos, en CRC y
-USD), anulaciones (incluido el saldo inicial y su nueva carga). Los Hitos 8 y 9 lo extienden con
-transferencias y cierres.
+USD), anulaciones (incluido el saldo inicial y su nueva carga). Desde el Hito 6: extras pendientes
+(fuera del invariante), repartidos (dentro) y anulados (revierten), y gastos fijos con pagos
+(algunos anulados y vueltos a pagar). Los Hitos 8 y 9 lo extienden con transferencias y cierres.
 """
 
 from __future__ import annotations
@@ -47,6 +48,29 @@ class SyntheticExpense:
 
 
 @dataclass(frozen=True)
+class SyntheticExtra:
+    day: date
+    money: SyntheticMoney
+    shares: tuple[int, ...] | None  # porcentajes por bolsa (suman 100); None = queda pendiente
+
+
+@dataclass(frozen=True)
+class SyntheticRecurring:
+    money: SyntheticMoney  # el tipo de cambio es el de cada pago, no de la plantilla
+    day_of_month: int
+    pocket_index: int
+    start: Month
+
+
+@dataclass(frozen=True)
+class SyntheticPayment:
+    recurring_index: int
+    day: date
+    rate: str | None  # tipo de cambio de este pago (solo USD)
+    void_and_repay: bool
+
+
+@dataclass(frozen=True)
 class SyntheticDataset:
     seed: int
     pockets: tuple[tuple[str, Behavior], ...]
@@ -59,6 +83,10 @@ class SyntheticDataset:
     reload_initial: (
         tuple[tuple[str, int], ...] | None
     )  # anula el saldo inicial y lo vuelve a cargar
+    extras: tuple[SyntheticExtra, ...] = ()
+    voided_extras: tuple[int, ...] = ()  # índices en `extras`
+    recurring: tuple[SyntheticRecurring, ...] = ()
+    payments: tuple[SyntheticPayment, ...] = ()
 
 
 def _percentages(rng: random.Random, count: int) -> tuple[int, ...]:
@@ -110,16 +138,55 @@ def generate(seed: int) -> SyntheticDataset:
     voided_incomes = tuple(i for i in range(len(incomes)) if rng.random() < 0.2)
     voided_expenses = tuple(i for i in range(len(expenses)) if rng.random() < 0.2)
     reload = _initial(rng, pockets) if rng.random() < 0.25 else None
+    initial = _initial(rng, pockets)
+    extras = tuple(
+        SyntheticExtra(
+            _day(rng),
+            _money(rng, 1_000_000),
+            _percentages(rng, count) if rng.random() < 0.6 else None,
+        )
+        for _ in range(rng.randint(0, 4))
+    )
+    voided_extras = tuple(i for i in range(len(extras)) if rng.random() < 0.25)
+    recurring = tuple(
+        SyntheticRecurring(
+            _money(rng, 400_000),
+            rng.randint(1, 31),
+            rng.randrange(count),
+            rng.choice(months[:6]),
+        )
+        for _ in range(rng.randint(0, 3))
+    )
+    payments = []
+    for index, template in enumerate(recurring):
+        month = template.start
+        while month <= Month.of(TODAY):
+            if rng.random() < 0.6:
+                last = TODAY.day if month == Month.of(TODAY) else 28
+                rate = template.money.rate and f"{rng.randint(450, 650)}.{rng.randint(0, 99):02d}"
+                payments.append(
+                    SyntheticPayment(
+                        index,
+                        date(month.year, month.month, rng.randint(1, last)),
+                        rate,
+                        rng.random() < 0.2,
+                    )
+                )
+            month = month.next()
     return SyntheticDataset(
         seed,
         pockets,
-        _initial(rng, pockets),
+        initial,
         tuple(allocations),
         incomes,
         expenses,
         voided_incomes,
         voided_expenses,
         reload,
+        extras,
+        voided_extras,
+        recurring,
+        tuple(payments),
     )
 
 
@@ -168,3 +235,60 @@ async def apply(store, dataset: SyntheticDataset) -> None:
         await ledger.void_transaction(ref, VOID_REASON, f"{prefix}-void-{n}", confirm=True)
     if dataset.reload_initial is not None:
         await budget.load_initial_balance(list(dataset.reload_initial), confirm=True)
+    await _apply_extras(ledger, dataset, prefix)
+    await _apply_recurring(ledger, dataset, prefix)
+
+
+async def _apply_extras(ledger: LedgerService, dataset: SyntheticDataset, prefix: str) -> None:
+    for n, extra in enumerate(dataset.extras):
+        result = await ledger.register_extra_income(
+            extra.money.amount,
+            f"{prefix}-ext-{n}",
+            currency=extra.money.currency,
+            exchange_rate=extra.money.rate,
+            income_date=extra.day.isoformat(),
+        )
+        if extra.shares is not None:
+            shares = [
+                (name, pct)
+                for (name, _), pct in zip(dataset.pockets, extra.shares, strict=True)
+                if pct
+            ]
+            preview = await ledger.confirm_allocation(result.reference, shares)
+            await ledger.confirm_allocation(
+                result.reference,
+                shares,
+                confirm=True,
+                operation_id=f"{prefix}-alloc-{n}",
+                preview_token=preview.preview_token,
+            )
+        if n in dataset.voided_extras:
+            await ledger.void_transaction(
+                result.reference, VOID_REASON, f"{prefix}-vext-{n}", confirm=True
+            )
+
+
+async def _apply_recurring(ledger: LedgerService, dataset: SyntheticDataset, prefix: str) -> None:
+    for n, template in enumerate(dataset.recurring):
+        await ledger.manage_recurring(
+            "crear",
+            f"{prefix}-rec-{n}",
+            name=f"Fijo sintético {n + 1}",
+            amount=template.money.amount,
+            currency=template.money.currency,
+            day_of_month=template.day_of_month,
+            pocket=dataset.pockets[template.pocket_index][0],
+            start_month=str(template.start),
+        )
+    for n, payment in enumerate(dataset.payments):
+        args = {"recurring": f"F-{payment.recurring_index + 1}", "exchange_rate": payment.rate}
+        paid = await ledger.add_expense(
+            operation_id=f"{prefix}-pay-{n}", expense_date=payment.day.isoformat(), **args
+        )
+        if payment.void_and_repay:
+            await ledger.void_transaction(
+                paid.reference, VOID_REASON, f"{prefix}-vpay-{n}", confirm=True
+            )
+            await ledger.add_expense(
+                operation_id=f"{prefix}-repay-{n}", expense_date=payment.day.isoformat(), **args
+            )

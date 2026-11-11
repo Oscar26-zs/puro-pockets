@@ -20,6 +20,7 @@ from puro_pockets.mcp.inputs import (
     CurrencyInput,
     LimitInput,
     MoneyInput,
+    OptionalMoneyInput,
     RateInput,
     domain_errors,
 )
@@ -81,7 +82,7 @@ def register_ledger_tools(server: MCPServer, service: LedgerService) -> None:
         su mes presupuestario; guarda el porcentaje usado en cada reparto (RN-02, RN-03, RN-08).
 
         En USD exige el tipo de cambio (nunca se asume) y guarda el equivalente en colones (RN-57).
-        Solo salario: los ingresos extra llegan en el Hito 6.
+        Solo salario: un ingreso extra se registra con register_extra_income.
         """
         return await service.add_income(
             amount, currency, exchange_rate, income_date, budget_month, confirm, operation_id
@@ -90,8 +91,8 @@ def register_ledger_tools(server: MCPServer, service: LedgerService) -> None:
     @server.tool()
     @domain_errors
     async def add_expense(
-        amount: MoneyInput,
         operation_id: str = Field(description=OPERATION_DESCRIPTION),
+        amount: OptionalMoneyInput = None,
         pocket: str | None = Field(
             default=None,
             description="Bolsa del gasto. Si se omite, la bolsa por defecto de la categoría.",
@@ -100,17 +101,29 @@ def register_ledger_tools(server: MCPServer, service: LedgerService) -> None:
             default=None,
             description='Categoría (opcional). Sin categoría queda "pendiente de clasificar".',
         ),
-        currency: CurrencyInput = "CRC",
+        currency: str | None = Field(
+            default=None,
+            description="CRC o USD. Por defecto CRC, o la moneda del gasto fijo si se paga uno.",
+        ),
         exchange_rate: RateInput = None,
         expense_date: str | None = Field(default=None, description=DATE_DESCRIPTION),
         description: str | None = Field(
             default=None, description="Descripción corta opcional (hasta 120 caracteres)."
+        ),
+        recurring: str | None = Field(
+            default=None,
+            description="Para pagar un gasto fijo: su referencia (F-n) o nombre. Sin monto se usa "
+            "el de la plantilla para ese mes; bolsa y categoría por defecto, las de la plantilla.",
         ),
     ) -> ExpenseResult:
         """Registra un gasto contra cualquier bolsa (RN-31 a RN-34), en el mes de su fecha.
 
         Si deja la bolsa en negativo, se guarda igual y la respuesta advierte con las bolsas que
         tienen saldo disponible (RN-37, RN-38). En USD exige el tipo de cambio (RN-57).
+
+        El monto es obligatorio salvo al pagar un gasto fijo (recurring). Un fijo admite un solo
+        pago vigente por mes (el mes de la fecha del pago); un fijo en USD exige el tipo de cambio
+        de este pago, nunca se reutiliza otro (decisión #12d).
         """
         return await service.add_expense(
             amount,
@@ -121,6 +134,7 @@ def register_ledger_tools(server: MCPServer, service: LedgerService) -> None:
             exchange_rate,
             expense_date,
             description,
+            recurring,
         )
 
     @server.tool()

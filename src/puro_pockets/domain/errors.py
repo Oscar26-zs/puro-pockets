@@ -46,3 +46,59 @@ class MovementNotFound(DomainError):
 class CategoryAlreadyExists(DomainError):
     def __init__(self, name: str) -> None:
         super().__init__(f"Ya existe una categoría llamada '{name}' (sin distinguir mayúsculas).")
+
+
+class NotAnExtra(DomainError):
+    def __init__(self, reference: str) -> None:
+        super().__init__(
+            f"{reference} no es un ingreso extra. Solo los extras se reparten con "
+            "confirm_allocation."
+        )
+
+
+class ExtraAlreadyDistributed(DomainError):
+    """Un extra se reparte una sola vez; corregir es anular y registrar de nuevo (RN-53, RN-59)."""
+
+    def __init__(self, reference: str) -> None:
+        super().__init__(
+            f"El extra {reference} ya se repartió y no se reparte de nuevo. Para corregirlo, "
+            "anúlalo con void_transaction (revierte su reparto) y regístralo otra vez."
+        )
+
+
+class MovementVoided(DomainError):
+    def __init__(self, reference: str) -> None:
+        super().__init__(f"El movimiento {reference} está anulado.")
+
+
+class PreviewRequired(DomainError):
+    """confirm=true exige la ficha de una vista previa con exactamente esos porcentajes."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Antes de confirmar, pide la vista previa (confirm=false) con estos mismos "
+            "porcentajes, muéstrala al propietario y, con su aprobación explícita, confirma con "
+            "el preview_token que devuelve."
+        )
+
+
+class RecurringAlreadyPaid(DomainError):
+    """Un solo pago vigente por gasto fijo y mes; si se anula, vuelve a quedar pendiente."""
+
+    def __init__(self, reference: str, month: str) -> None:
+        super().__init__(
+            f"El gasto fijo {reference} ya tiene un pago vigente en {month}. Si ese pago estaba "
+            "mal, anúlalo con void_transaction y registra el nuevo."
+        )
+
+
+class RecurringInactive(DomainError):
+    def __init__(self, reference: str) -> None:
+        super().__init__(f"El gasto fijo {reference} está desactivado: no admite pagos ni cambios.")
+
+
+class RecurringNameTaken(DomainError):
+    def __init__(self) -> None:
+        super().__init__(
+            "Ya existe un gasto fijo activo con ese nombre (sin distinguir mayúsculas)."
+        )

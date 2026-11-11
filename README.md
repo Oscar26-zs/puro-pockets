@@ -499,6 +499,29 @@ sesión del Hito 3.
   Haz un [respaldo](#respaldo-manual-de-la-base) antes de aplicarla. Su downgrade se niega si hay
   gastos o anulaciones, salvo con `ALLOW_DESTRUCTIVE_DOWNGRADE=true` (solo en desarrollo).
 
+## Extras y gastos fijos (Hito 6)
+
+| Tool | Qué hace |
+|---|---|
+| `register_extra_income` | Registra un ingreso extra: queda pendiente y "sin asignar" (no suma a ninguna bolsa), en el mes de su fecha. |
+| `get_allocation_context` | Datos del mes del extra (solo agregados) para que Claude proponga un reparto. |
+| `confirm_allocation` | Sin `confirm`: vista previa en colones y `preview_token`. Con `confirm=true`, el token y `operation_id`: reparte el extra (una sola vez). |
+| `manage_recurring` | Gastos fijos: `crear`, `listar`, `actualizar`, `desactivar` (nunca se borran). Referencia `F-n`. |
+| `list_pending_recurring` | Fijos que faltan pagar en el mes (vencimiento y atraso) y los ya pagados. |
+
+- **Quién decide:** Claude propone el reparto del extra con una explicación breve; la app no
+  recomienda. Claude te muestra la vista previa y solo confirma cuando la apruebas de forma
+  explícita. Si un reparto quedó mal, se anula el extra con `void_transaction` y se registra de nuevo.
+- **Pagar un fijo:** "pagué el internet" → `add_expense` con `recurring`. Sin monto se usa el de la
+  plantilla para ese mes; un fijo admite un solo pago vigente por mes. Un fijo en dólares pide el
+  tipo de cambio de ese pago, siempre.
+- **Cambiar el monto de un fijo** vale desde el mes siguiente; los meses anteriores conservan el suyo.
+- **"Sin asignar":** `get_summary` y `list_transactions` muestran cuántos extras faltan repartir y
+  su total (los de USD aparte).
+- **Migración `0005_extras_recurring`:** conserva tus datos del Hito 5. Haz un
+  [respaldo](#respaldo-manual-de-la-base) antes de aplicarla. Su downgrade se niega si hay gastos
+  fijos, extras o pagos enlazados, salvo con `ALLOW_DESTRUCTIVE_DOWNGRADE=true` (solo en desarrollo).
+
 ## Estructura
 
 ```text

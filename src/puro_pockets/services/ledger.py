@@ -1,4 +1,5 @@
-"""Casos de uso de los movimientos (Hito 5): salario, gastos, anulación, categorías y consultas.
+"""Casos de uso de los movimientos: salario, gastos, anulación, categorías y consultas (Hito 5);
+extras y gastos fijos (Hito 6, en `services/extras.py` y `services/recurring.py`).
 
 Las reglas viven en `domain/`; aquí se orquestan el almacén, el reloj y la idempotencia. El almacén
 es síncrono, así que sus llamadas corren en un hilo. Las respuestas son modelos que las tools
@@ -8,14 +9,12 @@ resultado original en un reintento. Los registros nunca incluyen montos ni descr
 
 from __future__ import annotations
 
-import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date
 from functools import partial
-from typing import Literal, Protocol, TypeVar
+from typing import Literal
 
-import anyio
 from pydantic import BaseModel, Field
 
 from puro_pockets.domain.allocation import (
@@ -27,7 +26,6 @@ from puro_pockets.domain.balances import (
     AllocationEntry,
     ExpenseEntry,
     IncomeKind,
-    PocketBalance,
     accumulated_balance,
     assigned,
     percent_used,
@@ -44,8 +42,9 @@ from puro_pockets.domain.errors import (
     AlreadyVoided,
     CategoryAlreadyExists,
     DomainError,
-    IdempotencyConflict,
     MovementNotFound,
+    RecurringAlreadyPaid,
+    RecurringInactive,
 )
 from puro_pockets.domain.idempotency import fingerprint, validate_operation_id
 from puro_pockets.domain.ledger import (
@@ -59,167 +58,70 @@ from puro_pockets.domain.ledger import (
 )
 from puro_pockets.domain.money import (
     Converted,
-    Currency,
-    RateRange,
     convert,
     format_original,
     format_rate,
+    parse_currency,
 )
 from puro_pockets.domain.months import Month
 from puro_pockets.domain.pockets import (
     Behavior,
     Pocket,
     find_pocket,
-    is_plain_int,
     normalize_name,
     ordered_active,
 )
-from puro_pockets.services.budget import AllocationLine, BudgetStore
+from puro_pockets.domain.recurring import RecurringRef, RecurringTemplate, find_recurring
+from puro_pockets.services.budget import AllocationLine
+from puro_pockets.services.extras import ExtrasMixin
+from puro_pockets.services.ledger_core import (
+    AllocationShare,
+    BalanceKindName,
+    BehaviorName,
+    CurrencyName,
+    PocketFigure,
+    UnassignedSummary,
+    figure,
+    logger,
+    parse_limit,
+    unassigned_summary,
+)
+from puro_pockets.services.records import (
+    ExpenseRow,
+    IncomeRow,
+    LedgerStore,
+    NewExpense,
+    NewIncome,
+    NewRecurring,
+    Operation,
+    OperationTaken,
+    RecurringChange,
+    StoredOperation,
+)
+from puro_pockets.services.recurring import RecurringMixin
 
-logger = logging.getLogger("puro_pockets.ledger")
-
-T = TypeVar("T")
+__all__ = [
+    "AllocationShare",
+    "BalanceKindName",
+    "ExpenseRow",
+    "IncomeRow",
+    "LedgerService",
+    "LedgerStore",
+    "NewExpense",
+    "NewIncome",
+    "NewRecurring",
+    "Operation",
+    "OperationTaken",
+    "PocketFigure",
+    "RecurringChange",
+    "StoredOperation",
+]
 
 DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT = 20, 100
 DEFAULT_TOP_LIMIT, MAX_TOP_LIMIT = 5, 20
 
-BehaviorName = Literal["consumo", "acumulable"]
-BalanceKindName = Literal["saldo", "disponible_del_mes"]
-
-
-# --- Registros que intercambian servicio y almacén ---
-
-
-@dataclass(frozen=True)
-class Operation:
-    operation_id: str
-    tool: str
-    fingerprint: str
-
-
-@dataclass(frozen=True)
-class StoredOperation:
-    tool: str
-    fingerprint: str
-    response: dict
-
-
-@dataclass(frozen=True)
-class NewIncome:
-    kind: IncomeKind
-    income_date: date
-    budget_month: Month
-    money: Converted
-
-
-@dataclass(frozen=True)
-class NewExpense:
-    expense_date: date
-    month: Month
-    pocket_id: int
-    category_id: int | None
-    description: str | None
-    money: Converted
-
-
-@dataclass(frozen=True)
-class IncomeRow:
-    id: int
-    kind: IncomeKind
-    income_date: date
-    budget_month: Month
-    currency: Currency
-    original_amount: int
-    exchange_rate: int | None
-    amount: int
-    voided: bool
-    void_reason: str | None
-
-
-@dataclass(frozen=True)
-class ExpenseRow:
-    id: int
-    expense_date: date
-    month: Month
-    pocket_id: int
-    category_id: int | None
-    description: str | None
-    currency: Currency
-    original_amount: int
-    exchange_rate: int | None
-    amount: int
-    voided: bool
-    void_reason: str | None
-
-
-class OperationTaken(Exception):  # noqa: N818 - señal interna, no un error de negocio
-    """Otra llamada simultánea guardó la misma clave de operación primero."""
-
-
-class LedgerStore(BudgetStore, Protocol):
-    """Almacén de movimientos. Las escrituras guardan el movimiento y la clave en una transacción;
-    si la clave ya existe (carrera), revierten y lanzan `OperationTaken`."""
-
-    def list_categories(self) -> list[Category]: ...
-
-    def create_category(self, name: str, pocket_id: int) -> Category: ...
-
-    def get_operation(self, operation_id: str) -> StoredOperation | None: ...
-
-    def record_income(
-        self,
-        income: NewIncome,
-        lines: Sequence[AllocationLine],
-        operation: Operation,
-        respond: Callable[[int], dict],
-    ) -> dict: ...
-
-    def record_expense(
-        self, expense: NewExpense, operation: Operation, respond: Callable[[int], dict]
-    ) -> dict: ...
-
-    def void_movement(
-        self,
-        ref: MovementRef,
-        reason: str,
-        voided_at: datetime,
-        operation: Operation,
-        response: dict,
-    ) -> None:
-        """Marca la anulación solo si no estaba anulado; si ya lo estaba, `AlreadyVoided`."""
-        ...
-
-    def get_income(self, income_id: int) -> IncomeRow | None: ...
-
-    def get_expense(self, expense_id: int) -> ExpenseRow | None: ...
-
-    def income_lines(self, income_id: int) -> list[AllocationLine]: ...
-
-    def recent_incomes(
-        self, month: Month | None, include_voided: bool, limit: int
-    ) -> list[IncomeRow]: ...
-
-    def recent_expenses(
-        self, month: Month | None, pocket_id: int | None, include_voided: bool, limit: int
-    ) -> list[ExpenseRow]: ...
-
-    def expenses_in_month(self, month: Month) -> list[ExpenseRow]:
-        """Gastos vigentes del mes."""
-        ...
-
-    def base_income_total(self, month: Month) -> int:
-        """Σ ingresos base vigentes del mes presupuestario (sin saldo inicial, RN-54)."""
-        ...
-
 
 # --- Respuestas (las tools las devuelven tal cual) ---
-
-
-class AllocationShare(BaseModel):
-    pocket: str
-    behavior: BehaviorName
-    percentage: int
-    amount: int = Field(description="Colones.")
 
 
 class IncomeResult(BaseModel):
@@ -228,18 +130,12 @@ class IncomeResult(BaseModel):
     kind: Literal["base"]
     income_date: str
     budget_month: str = Field(description="Mes presupuestario al que pertenece (5.1).")
-    currency: Literal["CRC", "USD"]
+    currency: CurrencyName
     original_amount: str = Field(description="Monto en su moneda (USD con 2 decimales).")
     exchange_rate: str | None = Field(description="Colones por dólar; null en CRC.")
     amount_crc: int = Field(description="Equivalente en colones, calculado una vez (RN-57).")
     allocation_source_month: str = Field(description="Mes del que vienen los porcentajes (RN-03).")
     items: list[AllocationShare]
-
-
-class PocketFigure(BaseModel):
-    pocket: str
-    balance: int = Field(description="Colones: saldo (acumulable) o disponible del mes (consumo).")
-    balance_kind: BalanceKindName
 
 
 class ExpenseResult(BaseModel):
@@ -248,7 +144,7 @@ class ExpenseResult(BaseModel):
     month: str = Field(description="Mes calendario del gasto (RN-32).")
     pocket: str
     category: str = Field(description='Nombre de la categoría o "pendiente de clasificar".')
-    currency: Literal["CRC", "USD"]
+    currency: CurrencyName
     original_amount: str
     exchange_rate: str | None
     amount_crc: int
@@ -258,12 +154,15 @@ class ExpenseResult(BaseModel):
     available_pockets: list[PocketFigure] = Field(
         description="Solo con sobregasto: otras bolsas con saldo disponible."
     )
+    recurring: str | None = Field(
+        default=None, description="Gasto fijo pagado con este gasto (F-n), si lo es."
+    )
 
 
 class VoidResult(BaseModel):
     saved: bool = Field(description="True solo si se anuló; false es la vista previa.")
     reference: str
-    movement: Literal["gasto", "ingreso", "saldo_inicial"]
+    movement: Literal["gasto", "ingreso", "extra", "saldo_inicial"]
     date: str
     month: str
     amount_crc: int
@@ -304,10 +203,17 @@ class SummaryPocket(BaseModel):
 
 class SummaryResult(BaseModel):
     month: str
-    income_total: int = Field(description="Ingresos base del mes; el saldo inicial no cuenta.")
+    income_total: int = Field(
+        description="Ingresos repartidos del mes (base + extras repartidos); el saldo inicial no "
+        "cuenta."
+    )
+    extra_income_total: int = Field(description="Parte de income_total que son extras repartidos.")
     expense_total: int
     pockets: list[SummaryPocket]
     negative_pockets: list[str]
+    unassigned: UnassignedSummary = Field(
+        description='Extras "sin asignar" (pendientes de repartir, RN-06), de cualquier mes.'
+    )
 
 
 class CategoryTotal(BaseModel):
@@ -326,23 +232,30 @@ class TopCategoriesResult(BaseModel):
 class TransactionItem(BaseModel):
     reference: str
     type: Literal["gasto", "ingreso"]
-    kind: str | None = Field(description="Solo ingresos: base o saldo_inicial.")
+    kind: str | None = Field(description="Solo ingresos: base, extra o saldo_inicial.")
     date: str
     month: str = Field(description="Gastos: mes calendario; ingresos: mes presupuestario.")
     pocket: str | None
     category: str | None
     description: str | None
-    currency: Literal["CRC", "USD"]
+    currency: CurrencyName
     original_amount: str
     exchange_rate: str | None
     amount_crc: int
     voided: bool
     void_reason: str | None
+    allocation_status: Literal["pendiente", "repartido"] | None = Field(
+        default=None, description='Solo ingresos: "pendiente" = extra sin asignar (RN-06).'
+    )
+    recurring: str | None = Field(default=None, description="Solo gastos: fijo pagado (F-n).")
 
 
 class TransactionsResult(BaseModel):
     items: list[TransactionItem]
     has_more: bool = Field(description="True si hay más movimientos que el límite.")
+    unassigned: UnassignedSummary = Field(
+        description='Extras "sin asignar" (pendientes de repartir, RN-06), de cualquier mes.'
+    )
 
 
 class CategoryItem(BaseModel):
@@ -365,60 +278,60 @@ class _IncomeDraft:
     payload: dict
 
 
-def _figure(balance: PocketBalance) -> PocketFigure:
-    return PocketFigure(
-        pocket=balance.pocket.name, balance=balance.balance, balance_kind=balance.kind.value
-    )
+@dataclass(frozen=True)
+class _ExpenseRequest:
+    amount: object
+    currency: object
+    exchange_rate: object
+    pocket: object
+    category: object
+    expense_date: object
+    description: str | None
+    recurring: object
 
 
-def _limit(value: object, default: int, maximum: int) -> int:
-    if value is None:
-        return default
-    if not is_plain_int(value) or not 1 <= value <= maximum:  # type: ignore[operator]
-        raise DomainError(f"El límite debe ser un entero entre 1 y {maximum}.")
-    return int(value)  # type: ignore[call-overload]
+def _blank(value: object) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
 
 
-class LedgerService:
-    def __init__(
-        self,
-        store: LedgerStore,
-        today: Callable[[], date],
-        rate_range: RateRange,
-        now: Callable[[], datetime] | None = None,
-    ) -> None:
-        self._store = store
-        self._today = today
-        self._rates = rate_range
-        self._now = now or (lambda: datetime.now(UTC))
+def _name_key(value: object) -> str | None:
+    return normalize_name(value) if isinstance(value, str) and value.strip() else None
 
-    async def _run(self, fn: Callable[[], T]) -> T:
-        return await anyio.to_thread.run_sync(fn)
 
-    def _month(self, month: object) -> Month:
-        if month is None or (isinstance(month, str) and not month.strip()):
-            return Month.of(self._today())
-        return Month.parse(month)
+def _recurring_key(value: object) -> str:
+    ref = RecurringRef.match(value)
+    if ref is not None:
+        return str(ref)
+    if not isinstance(value, str):
+        raise DomainError("Indica el gasto fijo por su referencia (F-n) o por su nombre.")
+    return normalize_name(value)
 
-    # --- Idempotencia ---
 
-    def _replay(self, operation: Operation) -> dict | None:
-        stored = self._store.get_operation(operation.operation_id)
-        if stored is None:
-            return None
-        if stored.tool != operation.tool or stored.fingerprint != operation.fingerprint:
-            logger.warning(
-                "Clave de operación reutilizada con otro contenido: tool=%s", operation.tool
-            )
-            raise IdempotencyConflict()
-        logger.info("Reintento con la misma clave: tool=%s (sin duplicar)", operation.tool)
-        return stored.response
+def _raw_amount(value: object) -> int | str | None:
+    """Monto tal como llegó, para la huella (sin `float`); se valida al convertirlo."""
+    if _blank(value):
+        return None
+    if isinstance(value, float):
+        raise DomainError('Un monto con decimales debe enviarse como texto, por ejemplo "10.50".')
+    if isinstance(value, bool) or not isinstance(value, int | str):
+        raise DomainError("El monto debe ser un número positivo.")
+    return value.strip() if isinstance(value, str) else value
 
-    def _after_race(self, operation: Operation) -> dict:
-        replay = self._replay(operation)
-        if replay is None:  # pragma: no cover - la clave existe si hubo carrera
-            raise DomainError("No se pudo completar la operación; reinténtala con la misma clave.")
-        return replay
+
+def _raw_rate(value: object) -> int | str | None:
+    if _blank(value):
+        return None
+    if isinstance(value, float):
+        raise DomainError(
+            'Un tipo de cambio con decimales debe enviarse como texto, por ejemplo "512.34".'
+        )
+    if isinstance(value, bool) or not isinstance(value, int | str):
+        raise DomainError("El tipo de cambio debe ser un número positivo.")
+    return value.strip() if isinstance(value, str) else value
+
+
+class LedgerService(ExtrasMixin, RecurringMixin):
+    """Casos de uso de movimientos. Los extras (Hito 6) y los gastos fijos viven en mixins."""
 
     # --- Ingreso base (constitución 5.1; RN-02, RN-03, RN-08, RN-55 a 57) ---
 
@@ -541,50 +454,81 @@ class LedgerService:
         )
         return result
 
-    # --- Gastos (RN-31 a RN-34, RN-37, RN-38) ---
+    # --- Gastos (RN-31 a RN-34, RN-37, RN-38) y pago de gastos fijos (RN-35) ---
 
     async def add_expense(
         self,
-        amount: object,
-        operation_id: object,
+        amount: object = None,
+        operation_id: object = None,
         pocket: object = None,
         category: object = None,
-        currency: object = "CRC",
+        currency: object = None,
         exchange_rate: object = None,
         expense_date: object = None,
         description: object = None,
+        recurring: object = None,
     ) -> ExpenseResult:
         op_id = validate_operation_id(operation_id)
-        money = convert(amount, currency, exchange_rate, self._rates)
         explicit_date = parse_date(expense_date, "del gasto")
         movement_date(expense_date, "del gasto", self._today())
         text = validate_description(description)
-        payload = {
-            "amount": money.original_amount,
-            "currency": money.currency.value,
-            "exchange_rate": money.exchange_rate,
-            "pocket": normalize_name(pocket)
-            if isinstance(pocket, str) and pocket.strip()
-            else None,
-            "category": normalize_name(category)
-            if isinstance(category, str) and category.strip()
-            else None,
+        request = _ExpenseRequest(
+            amount, currency, exchange_rate, pocket, category, expense_date, text, recurring
+        )
+        common = {
+            "pocket": _name_key(pocket),
+            "category": _name_key(category),
             "expense_date": explicit_date.isoformat() if explicit_date else None,
             "description": text,
         }
+        if _blank(recurring):
+            money = convert(
+                amount, "CRC" if _blank(currency) else currency, exchange_rate, self._rates
+            )
+            # Mismo contenido de huella que en el Hito 5 (sin la clave "recurring")
+            payload = {
+                "amount": money.original_amount,
+                "currency": money.currency.value,
+                "exchange_rate": money.exchange_rate,
+                **common,
+            }
+        else:
+            money = None  # el monto puede salir de la plantilla: se resuelve con el almacén
+            payload = {
+                "recurring": _recurring_key(recurring),
+                "amount": _raw_amount(amount),
+                "currency": None if _blank(currency) else parse_currency(currency).value,
+                "exchange_rate": _raw_rate(exchange_rate),
+                **common,
+            }
         operation = Operation(op_id, "add_expense", fingerprint("add_expense", payload))
-        return await self._run(
-            partial(self._write_expense, operation, money, pocket, category, expense_date, text)
-        )
+        return await self._run(partial(self._write_expense, operation, money, request))
 
     def _expense_target(
-        self, pockets: list[Pocket], pocket: object, category: object
+        self,
+        pockets: list[Pocket],
+        pocket: object,
+        category: object,
+        template: RecurringTemplate | None = None,
     ) -> tuple[Pocket, Category | None]:
+        categories = self._store.list_categories()
         chosen = None
         if isinstance(category, str) and category.strip():
-            chosen = find_category(self._store.list_categories(), category)
+            chosen = find_category(categories, category)
+        elif template is not None and template.category_id is not None:
+            chosen = next(
+                (c for c in categories if c.id == template.category_id and c.active), None
+            )
         if isinstance(pocket, str) and pocket.strip():
             return find_pocket(pockets, pocket), chosen
+        if template is not None:
+            default = next((p for p in pockets if p.id == template.pocket_id and p.active), None)
+            if default is None:
+                raise DomainError(
+                    f"La bolsa por defecto del gasto fijo {template.reference} está archivada; "
+                    "indica la bolsa del pago."
+                )
+            return default, chosen
         if chosen is None:
             raise DomainError(
                 "Indica la bolsa del gasto, o una categoría para usar su bolsa por defecto."
@@ -597,32 +541,59 @@ class LedgerService:
             )
         return default, chosen
 
+    def _template_money(
+        self, template: RecurringTemplate, month: Month, request: _ExpenseRequest
+    ) -> Converted:
+        """Monto del pago: el indicado o el de la plantilla en ese mes. En USD siempre exige el
+        tipo de cambio de este pago; nunca reutiliza otro (decisión #12d)."""
+        if _blank(request.currency):
+            currency = template.currency
+        else:
+            currency = parse_currency(request.currency)
+        amount = request.amount
+        if _blank(amount):
+            if currency is not template.currency:
+                raise DomainError(
+                    "Indica el monto: la moneda del pago es distinta de la del gasto fijo."
+                )
+            amount = format_original(currency, template.amount_for(month))
+        return convert(amount, currency.value, request.exchange_rate, self._rates)
+
     def _write_expense(
-        self,
-        operation: Operation,
-        money: Converted,
-        pocket: object,
-        category: object,
-        expense_date: object,
-        description: str | None,
+        self, operation: Operation, money: Converted | None, request: _ExpenseRequest
     ) -> ExpenseResult:
         replay = self._replay(operation)
         if replay is not None:
             return ExpenseResult.model_validate(replay)
         pockets = self._store.list_pockets()
-        target, chosen = self._expense_target(pockets, pocket, category)
-        day = movement_date(expense_date, "del gasto", self._today())
+        day = movement_date(request.expense_date, "del gasto", self._today())
         month = Month.of(day)
+        template = None
+        if not _blank(request.recurring):
+            template = find_recurring(self._store.list_recurring(), request.recurring)
+            if not template.active:
+                raise RecurringInactive(template.reference)
+            if month < template.start_month:
+                raise DomainError(
+                    f"El gasto fijo {template.reference} empieza en {template.start_month}; un "
+                    f"pago con fecha de {month} no le corresponde."
+                )
+            if template.id in self._store.recurring_payments(month):
+                raise RecurringAlreadyPaid(template.reference, str(month))
+            money = self._template_money(template, month, request)
+        if money is None:  # pragma: no cover - sin plantilla, el monto ya se convirtió
+            raise DomainError("Falta el monto del gasto.")
+        target, chosen = self._expense_target(pockets, request.pocket, request.category, template)
 
         entries = self._store.allocation_entries()
         after = [*self._store.expense_entries(), ExpenseEntry(target.id, month, money.amount_crc)]
-        figure = pocket_balance(target, entries, month, after)
-        overspent = figure.balance < 0
+        balance = pocket_balance(target, entries, month, after)
+        overspent = balance.balance < 0
         available = []
         warning = None
         if overspent:
             available = [
-                _figure(b)
+                figure(b)
                 for b in (
                     pocket_balance(p, entries, month, after)
                     for p in ordered_active(pockets)
@@ -640,6 +611,7 @@ class LedgerService:
                     else "Ninguna otra bolsa tiene saldo disponible."
                 )
             )
+        paid = money
 
         def respond(expense_id: int) -> dict:
             return ExpenseResult(
@@ -648,20 +620,27 @@ class LedgerService:
                 month=str(month),
                 pocket=target.name,
                 category=chosen.name if chosen else UNCLASSIFIED,
-                currency=money.currency.value,
-                original_amount=format_original(money.currency, money.original_amount),
-                exchange_rate=format_rate(money.exchange_rate)
-                if money.exchange_rate is not None
+                currency=paid.currency.value,
+                original_amount=format_original(paid.currency, paid.original_amount),
+                exchange_rate=format_rate(paid.exchange_rate)
+                if paid.exchange_rate is not None
                 else None,
-                amount_crc=money.amount_crc,
-                pocket_balance=_figure(figure),
+                amount_crc=paid.amount_crc,
+                pocket_balance=figure(balance),
                 overspent=overspent,
                 warning=warning,
                 available_pockets=available,
+                recurring=template.reference if template else None,
             ).model_dump(mode="json")
 
         expense = NewExpense(
-            day, month, target.id, chosen.id if chosen else None, description, money
+            day,
+            month,
+            target.id,
+            chosen.id if chosen else None,
+            request.description,
+            money,
+            template.id if template else None,
         )
         try:
             response = self._store.record_expense(expense, operation, respond)
@@ -669,11 +648,12 @@ class LedgerService:
             return ExpenseResult.model_validate(self._after_race(operation))
         result = ExpenseResult.model_validate(response)
         logger.info(
-            "Gasto registrado: ref=%s mes=%s moneda=%s sobregasto=%s",
+            "Gasto registrado: ref=%s mes=%s moneda=%s sobregasto=%s fijo=%s",
             result.reference,
             result.month,
             result.currency,
             "sí" if overspent else "no",
+            result.recurring or "-",
         )
         return result
 
@@ -700,6 +680,7 @@ class LedgerService:
         pockets = {p.id: p for p in self._store.list_pockets()}
         negatives: list[PocketFigure] = []
         initial = False
+        notes = []
         if ref.kind is MovementKind.INCOME:
             income = self._store.get_income(ref.number)
             if income is None:
@@ -707,9 +688,14 @@ class LedgerService:
             if income.voided:
                 raise AlreadyVoided(str(ref))
             initial = income.kind is IncomeKind.INITIAL_BALANCE
-            label = "saldo_inicial" if initial else "ingreso"
+            label = {IncomeKind.INITIAL_BALANCE: "saldo_inicial", IncomeKind.EXTRA: "extra"}.get(
+                income.kind, "ingreso"
+            )
             day, month, amount = income.income_date, income.budget_month, income.amount
-            negatives = self._negatives_after_void(income, pockets)
+            if income.pending:
+                notes.append("El extra seguía sin asignar: anularlo no cambia ninguna bolsa.")
+            else:
+                negatives = self._negatives_after_void(income, pockets)
         else:
             expense = self._store.get_expense(ref.number)
             if expense is None:
@@ -718,8 +704,12 @@ class LedgerService:
                 raise AlreadyVoided(str(ref))
             label = "gasto"  # anular un gasto solo sube la bolsa: nunca deja negativos
             day, month, amount = expense.expense_date, expense.month, expense.amount
+            if expense.recurring_id is not None:
+                notes.append(
+                    f"El gasto fijo {RecurringRef(expense.recurring_id)} vuelve a quedar "
+                    f"pendiente en {expense.month}."
+                )
 
-        notes = []
         if negatives:
             names = ", ".join(n.pocket for n in negatives)
             notes.append(f"Al anularlo, estas bolsas quedan en negativo: {names} (RN-59, RN-37).")
@@ -771,9 +761,9 @@ class LedgerService:
         negatives = []
         for pocket_id in sorted({line.pocket_id for line in lines if line.amount > 0}):
             pocket = pockets[pocket_id]
-            figure = pocket_balance(pocket, after, income.budget_month, expenses)
-            if figure.balance < 0:
-                negatives.append(_figure(figure))
+            balance = pocket_balance(pocket, after, income.budget_month, expenses)
+            if balance.balance < 0:
+                negatives.append(figure(balance))
         return negatives
 
     # --- Categorías ---
@@ -867,9 +857,12 @@ class LedgerService:
         entries = self._store.allocation_entries()
         expenses = self._store.expense_entries()
         lines = [self._pocket_line(p, month, entries, expenses) for p in pockets]
+        extras = self._store.extra_income_total(month)
         return SummaryResult(
             month=str(month),
-            income_total=self._store.base_income_total(month),
+            income_total=self._store.base_income_total(month) + extras,
+            extra_income_total=extras,
+            unassigned=unassigned_summary(self._store.pending_extras()),
             expense_total=sum(e.amount for e in expenses if e.month == month),
             pockets=lines,
             negative_pockets=[line.pocket for line in lines if line.negative],
@@ -879,7 +872,7 @@ class LedgerService:
         self, month: object = None, limit: object = None
     ) -> TopCategoriesResult:
         target_month = self._month(month)
-        size = _limit(limit, DEFAULT_TOP_LIMIT, MAX_TOP_LIMIT)
+        size = parse_limit(limit, DEFAULT_TOP_LIMIT, MAX_TOP_LIMIT)
         return await self._run(partial(self._top_categories, target_month, size))
 
     def _top_categories(self, month: Month, size: int) -> TopCategoriesResult:
@@ -916,7 +909,7 @@ class LedgerService:
     ) -> TransactionsResult:
         blank = month is None or (isinstance(month, str) and not month.strip())
         target_month = None if blank else Month.parse(month)
-        size = _limit(limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT)
+        size = parse_limit(limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT)
         kind = type.strip().casefold() if isinstance(type, str) and type.strip() else None
         if kind not in (None, "gasto", "ingreso"):
             raise DomainError("El tipo debe ser 'gasto' o 'ingreso'.")
@@ -956,7 +949,9 @@ class LedgerService:
                 rows.append(((exp.expense_date, 1, exp.id), item))
         rows.sort(key=lambda r: r[0], reverse=True)
         return TransactionsResult(
-            items=[item for _, item in rows[:size]], has_more=len(rows) > size
+            items=[item for _, item in rows[:size]],
+            has_more=len(rows) > size,
+            unassigned=unassigned_summary(self._store.pending_extras()),
         )
 
     @staticmethod
@@ -969,13 +964,14 @@ class LedgerService:
             month=str(row.budget_month),
             pocket=None,
             category=None,
-            description=None,
+            description=row.source,
             currency=row.currency.value,
             original_amount=format_original(row.currency, row.original_amount),
             exchange_rate=format_rate(row.exchange_rate) if row.exchange_rate is not None else None,
             amount_crc=row.amount,
             voided=row.voided,
             void_reason=row.void_reason,
+            allocation_status="pendiente" if row.pending else "repartido",
         )
 
     @staticmethod
@@ -999,4 +995,5 @@ class LedgerService:
             amount_crc=row.amount,
             voided=row.voided,
             void_reason=row.void_reason,
+            recurring=str(RecurringRef(row.recurring_id)) if row.recurring_id else None,
         )

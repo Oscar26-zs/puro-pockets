@@ -1,6 +1,6 @@
 # Puro Pockets: hoja de ruta por hitos
 
-**Versión:** 0.8 (borrador)
+**Versión:** 0.9 (borrador)
 **Fecha:** 2026-11-09
 **Fuentes de verdad:** reglas en `.specify/memory/constitution.md` (referenciadas como `RN-xx`); técnica en `docs/plan-tecnico.md`.
 **Este documento define:** qué entrega cada hito, en qué orden y cuándo se considera terminado. No repite reglas de negocio ni el esquema de datos: los referencia.
@@ -274,14 +274,15 @@ El SDK de MCP para Python implementa el lado del **servidor de recursos** de OAu
 **Objetivo:** ingresos que no son salario, y gastos que se repiten cada mes.
 
 ### Entregables
-- **Ingreso extra** en estado `pendiente` hasta confirmar el reparto (RN-04 a 09).
-- **Tool de contexto** (`get_allocation_context`) que entrega a Claude el panorama del mes: presupuesto vs. gastado por bolsa, fijos pendientes y repartos anteriores. Claude propone bolsas y porcentajes; tú confirmas con `confirm_allocation`.
-- **Gastos fijos:** plantillas con monto, moneda y día del mes (RN-35, 36).
-- **Tools:** `register_extra_income`, `get_allocation_context`, `confirm_allocation`, `manage_recurring`, `list_pending_recurring`.
-- **Alerta de "sin asignar":** los extras pendientes aparecen en el resumen.
+- **Tablas** (migración `0005_extras_recurring`, que conserva los datos del Hito 5): `recurring_expenses`, `recurring_expense_amounts` y `expenses.recurring_id`; en `incomes` se reutilizan `kind = 'extra'` y `allocation_status` (solo un extra puede quedar pendiente).
+- **Ingreso extra** en estado `pendiente` hasta confirmar el reparto, en el mes de su fecha, con moneda y tipo de cambio como en el Hito 5 (RN-04 a 09).
+- **Tool de contexto** (`get_allocation_context`) que entrega a Claude solo agregados del mes: presupuesto vs. gastado por bolsa, fijos pendientes (los de USD aparte, sin convertir) y porcentajes de repartos anteriores. Claude propone bolsas y porcentajes; tú apruebas la vista previa y se confirma con `confirm_allocation` (con la ficha de esa vista previa). Instrucciones del servidor MCP que explican el flujo.
+- **Gastos fijos:** plantillas con monto (con historial: un cambio vale desde el mes siguiente), moneda, día del mes, bolsa, categoría opcional y mes de inicio; se desactivan, nunca se borran (RN-35, 36). Se pagan con `add_expense` y `recurring`; un solo pago vigente por mes. Un fijo en USD exige el tipo de cambio de cada pago (decisión #12d).
+- **Tools:** `register_extra_income`, `get_allocation_context`, `confirm_allocation`, `manage_recurring`, `list_pending_recurring`; `add_expense` acepta `recurring`.
+- **Alerta de "sin asignar":** los extras pendientes aparecen en `get_summary` y `list_transactions` (cantidad, total en colones y los de USD aparte).
+- **Invariante** (sección 11.4) extendido: extras pendientes fuera, repartidos dentro, anulaciones que revierten y pagos de fijos.
 
-### Cuestión a resolver en `/speckit-clarify`
-Cómo se generan los gastos fijos: ¿automáticamente cada mes (requiere un proceso programado) o bajo demanda, cuando Claude detecta que faltan? Recomendación: bajo demanda, que evita sumar un proceso programado al homelab.
+Los gastos fijos se recuerdan **bajo demanda** (`list_pending_recurring`), sin proceso programado: lo decidió el propietario al pedir el Hito 6 (2026-11-10), como recomendaba este documento.
 
 ### Prompt para /speckit-specify
 > El propietario quiere registrar ingresos extra y que, en cada uno, Claude le proponga cómo repartirlo entre las bolsas según la situación del mes, para él confirmar o ajustar antes de guardar. También quiere registrar sus gastos fijos mensuales y saber cuáles ya pagó y cuáles faltan. Incluye pruebas automáticas que verifiquen los criterios de aceptación.
@@ -289,7 +290,11 @@ Cómo se generan los gastos fijos: ¿automáticamente cada mes (requiere un proc
 ### Terminado cuando
 - Registras un extra: queda pendiente y visible como "sin asignar".
 - Claude propone un reparto razonable con base en el estado de tus bolsas, y al confirmar, la suma da exactamente el monto.
+- Claude no confirma un reparto sin mostrarte la vista previa y esperar tu aprobación explícita; un reparto que no suma 100 o un extra ya repartido se rechazan.
 - Registras un gasto fijo y `list_pending_recurring` muestra cuáles faltan en el mes.
+- Pagas un fijo (en USD, con el tipo de cambio de ese pago) y deja de figurar como pendiente; un segundo pago del mismo mes se rechaza.
+- La migración conserva los datos del Hito 5 y su downgrade está protegido.
+- La prueba del invariante pasa.
 
 ---
 
@@ -423,3 +428,4 @@ Cómo se generan los gastos fijos: ¿automáticamente cada mes (requiere un proc
 | 0.6 | 2026-11-09 | Se quita de la sección 3 la decisión del servidor de autorización de OAuth (decidido en el Hito 3: propio y mínimo, para un único usuario; registrado en `docs/plan-tecnico.md`). |
 | 0.7 | 2026-11-10 | Hito 4: se agrega `preview_initial_balance` a sus tools (principio 3.2 de la constitución; registrado en `docs/plan-tecnico.md` v0.6). La prueba del invariante de integridad empieza en el Hito 4, el primero que registra dinero (regla no negociable 3 de la constitución, que prevalece); el Hito 5 la extiende. Los datos iniciales son solo las bolsas; el 50/30/20 lo guarda el propietario (decisión del 2026-11-10). |
 | 0.8 | 2026-11-10 | Se quita de la sección 3 la decisión #12 (resuelta; constitución 1.0.1). Hito 5: tablas con nombres en inglés (`incomes`, `expenses`, `idempotency_keys`) y migración que conserva los datos del Hito 4; tools `preview_income` (principio 3.2), `create_category` y `list_categories`; anulación del saldo inicial; RN-59 pasa del Hito 8 al Hito 5 en la vista general (sus entregables ya la citaban) y se agregan RN-02, 03 y 08 por el reparto del salario; dos criterios más en "Terminado cuando" (USD sin tipo de cambio; migración y downgrade). |
+| 0.9 | 2026-11-11 | Hito 6: entregables con la migración `0005_extras_recurring` (que conserva los datos del Hito 5), contexto con solo agregados, ficha de vista previa e instrucciones del servidor, gastos fijos con historial de monto y pago con `add_expense`, "sin asignar" en resumen y listado, invariante extendido. Se quita la cuestión de `/speckit-clarify` (decidida por el propietario: gastos fijos bajo demanda). Cuatro criterios más en "Terminado cuando" (aprobación explícita, pago de fijo en USD, migración y downgrade, invariante). |

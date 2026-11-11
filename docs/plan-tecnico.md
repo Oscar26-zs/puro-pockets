@@ -1,7 +1,7 @@
 # Plan técnico de Puro Pockets
 
-**Versión:** 0.7
-**Fecha:** 2026-11-10
+**Versión:** 0.8
+**Fecha:** 2026-11-11
 **Capa:** 2 en la gobernanza de `.specify/memory/constitution.md`. Decide la técnica; si contradice a
 la constitución, gana la constitución y se corrige este documento.
 
@@ -220,6 +220,69 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
   USD o anulados, salvo con `ALLOW_DESTRUCTIVE_DOWNGRADE=true`.
 - **Registros:** sin montos ni descripciones (solo referencia, mes, moneda y si hubo sobregasto).
 
+### Extras y gastos fijos [DECIDIDO] (Hito 6)
+
+- **Código:** `domain/extras.py` (porcentajes del extra y ficha de vista previa), `domain/recurring.py`
+  (plantillas, vencimiento, pendientes), `services/extras.py` y `services/recurring.py` (mixins de
+  `LedgerService`), `services/ledger_core.py` (base común: almacén, reloj, idempotencia),
+  `services/records.py` (registros y protocolo `LedgerStore`), `mcp/extras_tools.py`. Migración
+  `0005_extras_recurring`.
+- **Ingreso extra:** `register_extra_income` guarda `kind = 'extra'` con `allocation_status =
+  'pendiente'` y sin repartos; su mes presupuestario es el de su fecha (RN-09). Moneda y tipo de
+  cambio como en el Hito 5. Mientras está pendiente no suma a ninguna bolsa ni al invariante y
+  aparece como "sin asignar" (RN-06) en `get_summary` y `list_transactions` (cantidad, total en
+  colones, y los de USD aparte con su total original).
+- **Contexto:** `get_allocation_context(extra)` entrega solo agregados del mes del extra: bolsas
+  activas (comportamiento, porcentaje vigente, presupuesto, gastado, disponible o saldo), gastos
+  fijos pendientes (cantidad, atrasados, total CRC; los de USD aparte y sin convertir) y los
+  porcentajes de los últimos 3 extras repartidos. Sin descripciones ni identificadores internos.
+  Las metas se agregan en el Hito 7.
+- **Reparto:** `confirm_allocation` valida enteros de 0 a 100 que suman 100 (RN-01) entre bolsas
+  activas (las omitidas reciben 0; 100 % a una sola bolsa, también personalizada, RN-07); reparte
+  con RN-08 (la última bolsa que recibe absorbe el residuo), guarda el porcentaje usado y pasa el
+  extra a `repartido` en una transacción (`UPDATE … WHERE allocation_status = 'pendiente'`, así dos
+  confirmaciones simultáneas no reparten dos veces). Un extra repartido no se reparte otra vez:
+  corregir es anular y registrar de nuevo (RN-53, RN-59).
+- **Claude recomienda, la app no (RN-05, principio 3.1).** Las instrucciones del servidor
+  (`MCPServer(instructions=…)`, que el SDK `mcp==2.3.0` entrega en `InitializeResult.instructions`)
+  y las descripciones de las tools explican el flujo: registrar → pedir contexto → proponer con una
+  explicación breve → vista previa → esperar la aprobación explícita → confirmar.
+- **Límite conocido de `confirm=true`:** por sí solo **no garantiza** que el modelo haya preguntado
+  al propietario; un modelo podría enviarlo sin esperar la respuesta. Mitigación en capas:
+  (1) `confirm=true` exige el `preview_token` que solo devuelve la vista previa con exactamente esos
+  porcentajes (huella SHA-256 del extra, su monto y el reparto), así no se confirma un reparto que
+  nunca se calculó ni se mostró; (2) instrucciones del servidor y descripciones que piden la
+  aprobación explícita y aclaran que una respuesta ambigua no lo es; (3) el cliente (claude.ai)
+  puede pedir permiso por cada llamada a una tool que escribe; (4) un error se corrige anulando
+  (`void_transaction` revierte el reparto) y registrando de nuevo. La ficha no prueba la
+  aprobación humana; eso queda en el cliente y en el propietario.
+- **Gastos fijos:** `manage_recurring` (`crear`, `listar`, `actualizar`, `desactivar`) sobre
+  `recurring_expenses`; nunca se borran (disparador). Nombre único entre las activas sin distinguir
+  mayúsculas. El monto tiene historial en `recurring_expense_amounts`: cambiarlo vale desde el mes
+  siguiente (o el de inicio, si es posterior) y los meses anteriores conservan el suyo. Moneda y mes
+  de inicio no se cambian; una desactivada no se reactiva. Día 1 a 31; si el mes es más corto, vence
+  el último día.
+- **Pendientes y pago:** `list_pending_recurring(mes)` lista las plantillas activas desde su mes de
+  inicio sin pago vigente en el mes, con vencimiento y marca de atrasado (hoy en
+  `APP_TIMEZONE`), y los ya pagados; no convierte USD. El pago es `add_expense` con `recurring`
+  (`F-n` o nombre): monto por defecto el de la plantilla para ese mes (se puede cambiar), bolsa y
+  categoría por defecto las de la plantilla. Un solo pago vigente por plantilla y mes (índice único
+  parcial `ux_expenses_recurring_month`, que ignora los anulados: anulado el pago, vuelve a
+  pendiente). Un fijo en USD exige el tipo de cambio de ese pago; nunca se asume ni se reutiliza el
+  último (decisión #12d).
+- **Referencias:** `F-<n>` para gastos fijos (además de `I-<n>` y `G-<n>`).
+- **Idempotencia:** `operation_id` obligatorio en `register_extra_income`, `confirm_allocation` (al
+  confirmar), `add_expense` (también al pagar un fijo) y en `manage_recurring` al crear, actualizar
+  y desactivar.
+- **Libro mayor en la base (0005):** un reparto no vuelve a `pendiente` ni se hace sobre un ingreso
+  anulado (la función `pp_ledger_movement_update` se reemplaza; el downgrade restaura la de 0004);
+  `recurring_id` de un gasto no se edita; plantillas y montos no se borran.
+- **Downgrade protegido:** `0005_extras_recurring` aborta si hay plantillas, extras o gastos
+  enlazados, salvo con `ALLOW_DESTRUCTIVE_DOWNGRADE=true`. El upgrade se niega si encuentra un
+  ingreso que no es extra en estado pendiente.
+- **Registros:** sin montos, descripciones, orígenes de extras ni nombres de plantillas (solo
+  referencias `I-`, `G-`, `F-`, mes, moneda y si hubo sobregasto).
+
 ---
 
 ## 12. Integración con Claude (MCP)
@@ -235,15 +298,16 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
 | `preview_income` | Vista previa del salario: mes presupuestario y reparto por bolsa, sin guardar nada (principio 3.2). | [DECIDIDO] (Hito 5) |
 | `add_income` | Registrar ingreso base (con moneda y tipo de cambio si aplica); exige `confirm=true`. | [DECIDIDO] (Hito 5) |
 | `create_category` / `list_categories` | Crear y listar categorías de gasto con su bolsa por defecto. | [DECIDIDO] (Hito 5) |
-| `register_extra_income` | Registrar ingreso extra en estado pendiente. | [DECIDIDO] |
-| `get_allocation_context` | Entregar a Claude el panorama del mes: presupuesto vs gastado por bolsa, fijos pendientes, metas y repartos previos. | [DECIDIDO] |
-| `confirm_allocation` | Confirmar el reparto de un extra (valida suma = 100). | [DECIDIDO] |
+| `register_extra_income` | Registrar ingreso extra en estado pendiente ("sin asignar"), en el mes de su fecha (RN-09). | [DECIDIDO] (Hito 6) |
+| `get_allocation_context` | Entregar a Claude el panorama del mes: presupuesto vs gastado por bolsa, fijos pendientes, metas y repartos previos (solo agregados). | [DECIDIDO] (Hito 6; las metas llegan en el Hito 7) |
+| `confirm_allocation` | Confirmar el reparto de un extra (valida suma = 100). Sin `confirm` devuelve la vista previa y su `preview_token`; con `confirm=true` lo exige. | [DECIDIDO] (Hito 6) |
 | `void_transaction` | Anular un ingreso o gasto con motivo, solo en mes abierto (todos abiertos hasta el Hito 9); vista previa sin `confirm`. Reemplaza a `update_transaction` y `delete_transaction`. | [DECIDIDO] (Hito 5) |
 | `get_bolsa_status` | Estado de una bolsa: asignado, transferencias, gastado, disponible y avance de su meta si la tiene. | [DECIDIDO] (Hito 5; la meta llega en el Hito 7) |
 | `get_summary(mes)` | Resumen mensual. | [DECIDIDO] (Hito 5) |
 | `top_categories` | En qué se gasta más. | [DECIDIDO] (Hito 5) |
 | `list_transactions` | Listar movimientos con filtros (20 por defecto, máximo 100). | [DECIDIDO] (Hito 5) |
-| `manage_recurring` | Crear, listar y modificar gastos fijos. | [DECIDIDO] |
+| `manage_recurring` | Crear, listar, modificar y desactivar gastos fijos (nunca se borran). | [DECIDIDO] (Hito 6) |
+| `list_pending_recurring` | Gastos fijos pendientes del mes (con vencimiento y atraso) y los ya pagados; el pago es `add_expense` con `recurring`. | [DECIDIDO] (Hito 6) |
 | `set_allocation` / `update_allocation` | Cambiar porcentajes de un mes. | [DECIDIDO] |
 | `get_allocation` | Consultar los porcentajes de un mes; si no tiene, los del mes anterior más cercano indicando su origen (RN-03). | [DECIDIDO] (Hito 4) |
 | `preview_rebalance` | Calcular reajuste de porcentajes sin guardar. | [DECIDIDO] |
@@ -261,10 +325,10 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
 
 ### 12.2 Reglas para las tools
 1. Las tools devuelven datos exactos y validan reglas. No dan consejos.
-2. Las tools que modifican dinero deben ser **idempotentes** o aceptar una clave de operación, para que una llamada repetida por Claude no duplique un movimiento. **[DECIDIDO] (Hito 5):** `operation_id` obligatorio en `add_income` (al confirmar), `add_expense` y `void_transaction`; misma clave y mismo contenido devuelven la respuesta original, otro contenido es error.
+2. Las tools que modifican dinero deben ser **idempotentes** o aceptar una clave de operación, para que una llamada repetida por Claude no duplique un movimiento. **[DECIDIDO] (Hito 5):** `operation_id` obligatorio en `add_income` (al confirmar), `add_expense` y `void_transaction`; misma clave y mismo contenido devuelven la respuesta original, otro contenido es error. **(Hito 6):** también en `register_extra_income`, `confirm_allocation` (al confirmar) y `manage_recurring` (crear, actualizar, desactivar).
 3. Las tools destructivas o de reparto piden confirmación del usuario antes de ejecutarse.
 4. Las respuestas de error deben ser claras para que Claude pueda explicarlas.
-5. Toda tool que reciba un monto en dólares exige el tipo de cambio (RN-57). Si falta, devuelve error en lugar de asumirlo.
+5. Toda tool que reciba un monto en dólares exige el tipo de cambio (RN-57). Si falta, devuelve error en lugar de asumirlo. Esto incluye el pago de un gasto fijo en USD (decisión #12d): nunca se reutiliza el último tipo de cambio.
 
 ---
 
@@ -362,6 +426,8 @@ CREATE TABLE incomes (
   amount BIGINT NOT NULL CHECK (amount > 0),           -- colones (base de todos los cálculos)
   allocation_status TEXT NOT NULL DEFAULT 'pendiente'
     CHECK (allocation_status IN ('pendiente','repartido')),
+  -- Hito 6 (0005): solo un extra puede estar pendiente; source = origen del extra (hasta 120)
+  CHECK (kind = 'extra' OR allocation_status = 'repartido'),
   note TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   -- Hito 5 (0004): las filas existentes quedan en CRC con original_amount = amount
@@ -423,10 +489,14 @@ CREATE TABLE expenses (
   voided_at TIMESTAMPTZ,
   void_reason TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  recurring_id BIGINT REFERENCES recurring_expenses(id),  -- Hito 6: pago de un gasto fijo
   -- mismos CHECK de moneda y anulación que incomes
 );
 CREATE INDEX ix_expenses_month ON expenses (month);
 CREATE INDEX ix_expenses_pocket_month ON expenses (pocket_id, month);
+-- Un solo pago vigente por gasto fijo y mes (anulado, el fijo vuelve a pendiente)
+CREATE UNIQUE INDEX ux_expenses_recurring_month ON expenses (recurring_id, month)
+  WHERE recurring_id IS NOT NULL AND NOT voided;
 
 -- Claves de operación (idempotencia, regla 12.2.2). Hito 5, migración 0004
 CREATE TABLE idempotency_keys (
@@ -439,16 +509,30 @@ CREATE TABLE idempotency_keys (
 -- Disparadores del libro mayor (0004): sin DELETE en incomes, income_allocations y expenses; sin
 -- UPDATE en income_allocations; en incomes y expenses solo se permite anular (no deshacer).
 
--- Gastos fijos mensuales (plantillas)
-CREATE TABLE gastos_recurrentes (
+-- Gastos fijos mensuales (plantillas). Hito 6, migración 0005. Referencia pública F-<id>
+CREATE TABLE recurring_expenses (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  nombre TEXT NOT NULL,
-  moneda TEXT NOT NULL DEFAULT 'CRC' CHECK (moneda IN ('CRC','USD')),
-  monto_original BIGINT NOT NULL CHECK (monto_original > 0),
-  dia_del_mes INTEGER NOT NULL CHECK (dia_del_mes BETWEEN 1 AND 31),
-  bolsa_id BIGINT NOT NULL REFERENCES pockets(id),
-  categoria_id BIGINT REFERENCES categories(id),
-  activo BOOLEAN NOT NULL DEFAULT TRUE
+  name TEXT NOT NULL CHECK (char_length(name) BETWEEN 1 AND 60),
+  currency TEXT NOT NULL CHECK (currency IN ('CRC','USD')),   -- no se cambia (disparador)
+  day_of_month INTEGER NOT NULL CHECK (day_of_month BETWEEN 1 AND 31),  -- mes corto: último día
+  pocket_id BIGINT NOT NULL REFERENCES pockets(id),     -- bolsa por defecto del pago
+  category_id BIGINT REFERENCES categories(id),         -- opcional
+  start_month CHAR(7) NOT NULL CHECK (start_month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),  -- no se cambia
+  active BOOLEAN NOT NULL DEFAULT TRUE,                 -- nunca se borra; no se reactiva
+  deactivated_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (active = (deactivated_at IS NULL))
+);
+CREATE UNIQUE INDEX ux_recurring_expenses_name_active ON recurring_expenses (lower(name))
+  WHERE active;
+
+-- Monto de cada plantilla desde un mes: cambiarlo afecta solo meses futuros. Sin tipo de cambio:
+-- cada pago en USD trae el suyo (decisión #12d)
+CREATE TABLE recurring_expense_amounts (
+  recurring_id BIGINT NOT NULL REFERENCES recurring_expenses(id),
+  from_month CHAR(7) NOT NULL CHECK (from_month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+  original_amount BIGINT NOT NULL CHECK (original_amount > 0),  -- CRC: colones; USD: centavos
+  PRIMARY KEY (recurring_id, from_month)
 );
 
 -- Libro mayor de transferencias entre bolsas (inmutable; siempre en colones)
@@ -497,7 +581,9 @@ CREATE TABLE closure_adjustments (
 - La conversión USD → CRC usa el tipo de cambio indicado, dentro del rango configurado, y redondeo
   half-up; nunca da 0 colones (RN-57).
 - Las fechas de gastos e ingresos no son futuras.
-- Las operaciones compuestas (crear bolsa, cerrar mes, anular un ingreso ya repartido) se ejecutan en una sola transacción.
+- Las operaciones compuestas (crear bolsa, cerrar mes, anular un ingreso ya repartido, repartir un extra) se ejecutan en una sola transacción.
+- El reparto de un extra suma exactamente 100 % entre bolsas activas (RN-01, RN-07) y exige la ficha de su vista previa.
+- Un pago de gasto fijo pertenece al mes calendario de su fecha y no puede ser anterior al mes de inicio de la plantilla.
 
 ---
 
@@ -518,16 +604,19 @@ esquema de la sección 17, con los valores que se guardan para estados, tipos y 
 | Ingreso | `incomes` | — |
 | Tipo de ingreso: base, extra, saldo inicial (5.1, 5.3, RN-54) | `incomes.kind` | `base`, `extra`, `saldo_inicial` |
 | Mes presupuestario (5.1, RN-09) | `incomes.budget_month` | `'YYYY-MM'` |
-| Estado del reparto de un ingreso (RN-06) | `incomes.allocation_status` | `pendiente`, `repartido` |
-| Moneda (RN-55) | `incomes.currency`, `expenses.currency`, `gastos_recurrentes.moneda` | `CRC`, `USD` |
+| Estado del reparto de un ingreso (RN-06) | `incomes.allocation_status` | `pendiente` (solo extras: "sin asignar"), `repartido` |
+| Origen de un ingreso extra | `incomes.source` | texto corto opcional (hasta 120) |
+| Moneda (RN-55) | `incomes.currency`, `expenses.currency`, `recurring_expenses.currency` | `CRC`, `USD` |
 | Monto original y tipo de cambio (RN-57) | `original_amount`, `exchange_rate`, `amount` en `incomes` y `expenses` | CRC en colones; USD en centavos; tipo de cambio en colones por USD × 100; `amount` en colones |
 | Lo asignado a la bolsa por los ingresos del mes (11.1) | `income_allocations.amount` (y `percentage`, el porcentaje usado) | colones enteros |
 | Gasto | `expenses` | — |
 | Mes calendario del gasto (RN-32) | `expenses.month` | `'YYYY-MM'` |
 | Gasto pendiente de clasificar (RN-34) | `expenses.category_id` | `NULL` |
 | Anulación con registro (RN-53) | `voided`, `voided_at`, `void_reason` en `incomes` y `expenses` | `voided`: `TRUE`, `FALSE` |
-| Clave de operación (12.2.2) | `idempotency_keys` | `tool`: `add_income`, `add_expense`, `void_transaction` |
-| Gasto fijo mensual (8.1) | `gastos_recurrentes` (`activo`) | `TRUE`, `FALSE` |
+| Clave de operación (12.2.2) | `idempotency_keys` | `tool`: `add_income`, `add_expense`, `void_transaction`, `register_extra_income`, `confirm_allocation`, `manage_recurring` |
+| Gasto fijo mensual (8.1) | `recurring_expenses` (`active`) | `TRUE` activo, `FALSE` desactivado |
+| Monto del gasto fijo por mes (8.1) | `recurring_expense_amounts` (`from_month`, `original_amount`) | CRC en colones; USD en centavos |
+| Pago de un gasto fijo (RN-35) | `expenses.recurring_id` | id de la plantilla u omitido |
 | Meta de ahorro (sección 7) | `savings_goals` | — |
 | Estado de una meta (RN-24) | `savings_goals.estado` | `activa`, `lograda`, `pausada` |
 | El registro de transferencias (RN-40) | `transfers` | — |
@@ -536,8 +625,9 @@ esquema de la sección 17, con los valores que se guardan para estados, tipos y 
 | Ajustes de cierre (RN-50, 10.2) | `closure_adjustments.tipo` | `sobrante_no_destinado`, `sobregasto_no_cubierto` |
 
 **Idioma de los nombres:** decidido en el Hito 1: inglés (ver "Convención de idioma"). Ya están en
-inglés las tablas de los Hitos 4 y 5 (`pockets`, `categories`, `budget_month_allocations`, `incomes`,
-`income_allocations`, `expenses`, `idempotency_keys`); el resto conserva los nombres del borrador y
+inglés las tablas de los Hitos 4 a 6 (`pockets`, `categories`, `budget_month_allocations`, `incomes`,
+`income_allocations`, `expenses`, `idempotency_keys`, `recurring_expenses`,
+`recurring_expense_amounts`); el resto conserva los nombres del borrador y
 se pasa al inglés antes de crear cada tabla. Los **valores** guardados (columna de la derecha) se mantienen como están.
 
 ---
@@ -553,3 +643,4 @@ se pasa al inglés antes de crear cada tabla. Los **valores** guardados (columna
 | 0.5 | 2026-11-09 | Hito 3: servidor de autorización OAuth propio (decisión pendiente resuelta), endpoints, clientes, duraciones, scopes, tablas `0002_oauth`, argon2, límite de intentos y revocación. |
 | 0.6 | 2026-11-10 | Hito 4: `pocket` como nombre de "bolsa" en tablas y código (las tools conservan sus nombres); se agregan al catálogo `preview_initial_balance` (principio 3.2), `list_bolsas` y `get_allocation`; nombres en inglés de `pockets`, `categories`, `budget_month_allocations`, `incomes` e `income_allocations` en la sección 17 y en la tabla concepto → tabla (nombres únicos sin distinguir mayúsculas); `incomes` se crea en el Hito 4 sin moneda ni anulación (llegan en el Hito 5 con su propia migración) y con índice único para el saldo inicial; sección "Presupuesto (Hito 4)": `APP_TIMEZONE`, estructura del código, salvaguardas y pruebas. |
 | 0.7 | 2026-11-10 | Hito 5: sección "Movimientos (Hito 5)" (montos sin `float`, conversión half-up, `USD_RATE_MIN`/`USD_RATE_MAX`, salario, gastos, anulación, referencias `I-`/`G-`, idempotencia, disparadores del libro mayor, downgrade protegido); esquema de la sección 17 con `incomes` completo, `expenses` e `idempotency_keys` (migración `0004_movements`); catálogo con `preview_income`, `create_category` y `list_categories`; regla 12.2.2 pasa a [DECIDIDO]; tabla concepto → tabla actualizada. |
+| 0.8 | 2026-11-11 | Hito 6: sección "Extras y gastos fijos (Hito 6)" (extra pendiente y "sin asignar", contexto con solo agregados, reparto con ficha de vista previa, instrucciones del servidor, límite de `confirm=true` y su mitigación, plantillas con historial de monto, pendientes y pago enlazado, referencias `F-`, idempotencia, disparadores y downgrade protegido); esquema de la sección 17 con `recurring_expenses`, `recurring_expense_amounts`, `expenses.recurring_id` y las restricciones nuevas de `incomes` (migración `0005_extras_recurring`); catálogo con `list_pending_recurring`; reglas 12.2.2 y 12.2.5 ampliadas; tabla concepto → tabla actualizada. |

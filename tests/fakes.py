@@ -9,12 +9,17 @@ from puro_pockets.domain.categories import Category
 from puro_pockets.domain.errors import (
     AlreadyVoided,
     CategoryAlreadyExists,
+    ExtraAlreadyDistributed,
     InitialBalanceAlreadyLoaded,
     MovementNotFound,
+    MovementVoided,
+    RecurringAlreadyPaid,
+    RecurringNameTaken,
 )
 from puro_pockets.domain.ledger import MovementKind
 from puro_pockets.domain.money import Converted, Currency
 from puro_pockets.domain.pockets import Behavior, Pocket, normalize_name
+from puro_pockets.domain.recurring import RecurringRef, RecurringTemplate
 from puro_pockets.services.ledger import (
     ExpenseRow,
     IncomeRow,
@@ -126,6 +131,7 @@ class InMemoryBudgetStore:
         self.expenses = []  # ExpenseRow
         self.categories = []  # Category
         self.operations = {}  # operation_id -> StoredOperation
+        self.recurring = []  # RecurringTemplate
         self.writes = 0
 
     def list_pockets(self):
@@ -144,7 +150,9 @@ class InMemoryBudgetStore:
     def has_initial_balance(self):
         return any(r.kind is IncomeKind.INITIAL_BALANCE and not r.voided for r in self.incomes)
 
-    def _add_income(self, kind, income_date, budget_month, money, lines):
+    def _add_income(
+        self, kind, income_date, budget_month, money, lines, pending=False, source=None
+    ):
         if kind is IncomeKind.INITIAL_BALANCE and self.has_initial_balance():
             raise InitialBalanceAlreadyLoaded()
         self.writes += 1
@@ -161,6 +169,8 @@ class InMemoryBudgetStore:
                 money.amount_crc,
                 False,
                 None,
+                pending,
+                source,
             )
         )
         self.lines.extend((income_id, line) for line in lines)
@@ -172,7 +182,8 @@ class InMemoryBudgetStore:
         return self._add_income(kind, income_date, budget_month, money, lines)
 
     def _live_incomes(self):
-        return {r.id: r for r in self.incomes if not r.voided}
+        # Como LIVE_INCOME en SQL: vigentes y repartidos (los extras pendientes no cuentan, RN-06)
+        return {r.id: r for r in self.incomes if not r.voided and not r.pending}
 
     def allocation_entries(self):
         live = self._live_incomes()
@@ -220,15 +231,42 @@ class InMemoryLedgerStore(InMemoryBudgetStore):
         if operation.operation_id in self.operations:
             raise OperationTaken()
         income_id = self._add_income(
-            income.kind, income.income_date, income.budget_month, income.money, lines
+            income.kind,
+            income.income_date,
+            income.budget_month,
+            income.money,
+            lines,
+            income.pending,
+            income.source,
         )
         response = respond(income_id)
+        self._save_operation(operation, response)
+        return response
+
+    def distribute_extra(self, income_id, lines, operation, respond):
+        if operation.operation_id in self.operations:
+            raise OperationTaken()
+        index = next(i for i, r in enumerate(self.incomes) if r.id == income_id)
+        row = self.incomes[index]
+        ref = f"I-{income_id}"
+        if row.voided:
+            raise MovementVoided(ref)
+        if not row.pending or row.kind is not IncomeKind.EXTRA:
+            raise ExtraAlreadyDistributed(ref)
+        self.writes += 1
+        self.incomes[index] = replace(row, pending=False)
+        self.lines.extend((income_id, line) for line in lines)
+        response = respond()
         self._save_operation(operation, response)
         return response
 
     def record_expense(self, expense, operation, respond):
         if operation.operation_id in self.operations:
             raise OperationTaken()
+        if expense.recurring_id is not None and expense.recurring_id in self.recurring_payments(
+            expense.month
+        ):
+            raise RecurringAlreadyPaid(str(RecurringRef(expense.recurring_id)), str(expense.month))
         self.writes += 1
         expense_id = len(self.expenses) + 1
         money = expense.money
@@ -246,6 +284,7 @@ class InMemoryLedgerStore(InMemoryBudgetStore):
                 money.amount_crc,
                 False,
                 None,
+                expense.recurring_id,
             )
         )
         response = respond(expense_id)
@@ -301,3 +340,100 @@ class InMemoryLedgerStore(InMemoryBudgetStore):
             for r in self.incomes
             if r.kind is IncomeKind.BASE and r.budget_month == month and not r.voided
         )
+
+    def extra_income_total(self, month):
+        return sum(
+            r.amount
+            for r in self.incomes
+            if r.kind is IncomeKind.EXTRA
+            and r.budget_month == month
+            and not r.voided
+            and not r.pending
+        )
+
+    def pending_extras(self):
+        return [
+            r for r in self.incomes if r.kind is IncomeKind.EXTRA and r.pending and not r.voided
+        ]
+
+    def distributed_extras(self, limit):
+        rows = [
+            r for r in self.incomes if r.kind is IncomeKind.EXTRA and not r.pending and not r.voided
+        ]
+        return sorted(rows, key=lambda r: (r.income_date, r.id), reverse=True)[:limit]
+
+    # --- Gastos fijos ---
+
+    def list_recurring(self):
+        return list(self.recurring)
+
+    def _name_free(self, name, except_id=None):
+        key = normalize_name(name)
+        if any(
+            t.active and t.id != except_id and normalize_name(t.name) == key for t in self.recurring
+        ):
+            raise RecurringNameTaken()
+
+    def create_recurring(self, new, operation, respond):
+        if operation.operation_id in self.operations:
+            raise OperationTaken()
+        self._name_free(new.name)
+        self.writes += 1
+        recurring_id = len(self.recurring) + 1
+        self.recurring.append(
+            RecurringTemplate(
+                recurring_id,
+                new.name,
+                new.currency,
+                new.day_of_month,
+                new.pocket_id,
+                new.category_id,
+                new.start_month,
+                True,
+                ((new.start_month, new.original_amount),),
+            )
+        )
+        response = respond(recurring_id)
+        self._save_operation(operation, response)
+        return response
+
+    def update_recurring(self, change, operation, respond):
+        if operation.operation_id in self.operations:
+            raise OperationTaken()
+        index = next(i for i, t in enumerate(self.recurring) if t.id == change.recurring_id)
+        template = self.recurring[index]
+        if change.name is not None:
+            self._name_free(change.name, template.id)
+        amounts = template.amounts
+        if change.amount is not None:
+            since, amount = change.amount
+            amounts = tuple(sorted({**dict(amounts), since: amount}.items()))
+        self.writes += 1
+        self.recurring[index] = replace(
+            template,
+            name=change.name if change.name is not None else template.name,
+            day_of_month=change.day_of_month or template.day_of_month,
+            pocket_id=change.pocket_id or template.pocket_id,
+            category_id=change.category_id or template.category_id,
+            amounts=amounts,
+        )
+        response = respond()
+        self._save_operation(operation, response)
+        return response
+
+    def deactivate_recurring(self, recurring_id, at, operation, respond):
+        if operation.operation_id in self.operations:
+            raise OperationTaken()
+        index = next(i for i, t in enumerate(self.recurring) if t.id == recurring_id)
+        self.writes += 1
+        self.recurring[index] = replace(self.recurring[index], active=False)
+        response = respond()
+        self._save_operation(operation, response)
+        return response
+
+    def recurring_payments(self, month):
+        return {
+            e.recurring_id: e.id
+            for e in self.expenses
+            if e.recurring_id is not None and e.month == month and not e.voided
+        }
