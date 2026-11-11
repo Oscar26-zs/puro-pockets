@@ -55,7 +55,21 @@ RateInput = Annotated[
         }
     ),
 ]
+OptionalMoneyInput = Annotated[
+    Any,
+    WithJsonSchema(
+        {
+            "anyOf": [{"type": "integer"}, {"type": "string"}, {"type": "null"}],
+            "default": None,
+            "description": "Colones: entero (12500). Dólares: entero o texto con hasta 2 "
+            'decimales ("10.50"). Opcional.',
+        }
+    ),
+]
 WholeNumberInput = Annotated[Any, WithJsonSchema({"type": "integer"})]
+OptionalWholeNumberInput = Annotated[
+    Any, WithJsonSchema({"anyOf": [{"type": "integer"}, {"type": "null"}], "default": None})
+]
 CurrencyInput = Annotated[str, Field(description="CRC (colones, por defecto) o USD (dólares).")]
 LimitInput = Annotated[int | None, BeforeValidator(_limit)]
 

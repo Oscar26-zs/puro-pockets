@@ -1,6 +1,6 @@
 # Constitución de Puro Pockets
 
-**Versión:** 1.0.1
+**Versión:** 1.0.2
 **Ratificada:** 2026-11-09
 **Propietario:** Oscar Zúñiga ("TosTar")
 
@@ -372,7 +372,7 @@ Los ingresos pendientes de repartir quedan fuera de la igualdad y se muestran ap
 
 | # | Tema | Decisión |
 |---|---|---|
-| 12 | Monedas, detalles | (a) El tipo de cambio lo indica el propietario en cada movimiento en USD; si falta, la tool devuelve error y **nunca lo asume**. (b) Todo se convierte a colones al registrar (RN-56). (c) Las metas son solo en colones. (d) Los gastos fijos en USD no se tratan aquí: se definen en el Hito 6. |
+| 12 | Monedas, detalles | (a) El tipo de cambio lo indica el propietario en cada movimiento en USD; si falta, la tool devuelve error y **nunca lo asume**. (b) Todo se convierte a colones al registrar (RN-56). (c) Las metas son solo en colones. (d) **Resuelta el 2026-11-10 (Hito 6):** un pago de un gasto fijo en USD exige el tipo de cambio que indique el propietario en ese pago; si falta, la tool devuelve error y **nunca lo asume ni reutiliza en silencio** el último usado. |
 
 ### 14.2 Abiertas y aplazadas
 
@@ -437,7 +437,7 @@ su número.
   cambio PATCH.
 - Si una enmienda toca una regla `RN-xx`, se revisan las specs que la citan.
 
-**Versión**: 1.0.1 | **Ratificada**: 2026-11-09 | **Última enmienda**: 2026-11-10
+**Versión**: 1.0.2 | **Ratificada**: 2026-11-09 | **Última enmienda**: 2026-11-10
 
 ---
 
@@ -447,3 +447,4 @@ su número.
 |---|---|---|
 | 1.0.0 | 2026-11-09 | Ratificación inicial, derivada del documento de origen v0.3. |
 | 1.0.1 | 2026-11-10 | PATCH aprobado por el propietario: la decisión #12 (detalles de monedas) pasa a resuelta (sección 14.1.1) y RN-56 y RN-57 pasan de [PROPUESTO] a [DECIDIDO] (RN-55 ya lo estaba). No cambia el significado de ninguna regla. |
+| 1.0.2 | 2026-11-10 | PATCH aprobado por el propietario: se resuelve el punto (d) de la decisión #12 (sección 14.1.1): un pago de gasto fijo en USD exige el tipo de cambio indicado en ese pago; si falta, error, sin asumirlo ni reutilizar el último. No cambia el significado de ninguna regla. |

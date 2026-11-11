@@ -15,7 +15,7 @@ from .conftest import alembic_config
 
 pytestmark = pytest.mark.integration
 
-HEAD = "0004_movements"
+HEAD = "0005_extras_recurring"
 
 
 def _scalar(url: str, sql: str, **params):
@@ -298,3 +298,162 @@ def test_0004_nuevo_saldo_inicial_tras_anular(empty_database):
     )
     _execute(url, initial)
     assert _scalar(url, "SELECT count(*) FROM incomes WHERE kind = 'saldo_inicial'") == 2
+
+
+# --- Hito 6: 0005_extras_recurring ---
+
+HITO5_DATA = (
+    HITO4_DATA[0],
+    "INSERT INTO incomes (income_date, kind, budget_month, amount, original_amount, "
+    "allocation_status) VALUES ('2026-11-10', 'saldo_inicial', '2026-11', 684757, 684757, "
+    "'repartido')",
+    HITO4_DATA[2],
+    "INSERT INTO incomes (income_date, kind, budget_month, amount, currency, original_amount, "
+    "exchange_rate, allocation_status) VALUES ('2026-11-01', 'base', '2026-12', 512340, 'USD', "
+    "100000, 51234, 'repartido')",
+    "INSERT INTO income_allocations (income_id, pocket_id, percentage, amount) "
+    "VALUES (2, 1, 100, 512340)",
+    "INSERT INTO incomes (income_date, kind, budget_month, amount, original_amount, "
+    "allocation_status, voided, voided_at, void_reason) VALUES ('2026-11-02', 'base', '2026-12', "
+    "7000, 7000, 'repartido', TRUE, '2026-11-03T10:00:00Z', 'prueba sintética')",
+    "INSERT INTO expenses (expense_date, month, pocket_id, description, currency, "
+    "original_amount, exchange_rate, amount) VALUES ('2026-11-05', '2026-11', 3, 'cena sintética', "
+    "'USD', 1000, 51234, 5123)",
+    "INSERT INTO idempotency_keys (operation_id, tool, fingerprint, response) "
+    "VALUES ('op-sintetica-1', 'add_expense', repeat('a', 64), '{}')",
+)
+TEMPLATE = (
+    "INSERT INTO recurring_expenses (name, currency, day_of_month, pocket_id, start_month) "
+    "VALUES ('Internet sintético', 'CRC', 31, 1, '2026-11')"
+)
+PENDING_EXTRA = (
+    "INSERT INTO incomes (income_date, kind, budget_month, amount, original_amount, "
+    "allocation_status) VALUES ('2026-11-10', 'extra', '2026-11', 4000, 4000, 'pendiente')"
+)
+
+
+def test_0005_conserva_los_datos_del_hito_5(empty_database):
+    url, name = empty_database
+    assert_temp_database(url, name)
+    config = alembic_config(url)
+    command.upgrade(config, "0004_movements")
+    for sql in HITO5_DATA:
+        _execute(url, sql)
+    tables = ("incomes", "income_allocations", "expenses", "idempotency_keys")
+    before = {table: _rows(url, f"SELECT * FROM {table} ORDER BY 1") for table in tables}
+
+    command.upgrade(config, "head")
+    assert _current_revision(url) == HEAD
+    for table in ("incomes", "income_allocations", "idempotency_keys"):
+        assert _rows(url, f"SELECT * FROM {table} ORDER BY 1") == before[table], table
+    # expenses gana la columna recurring_id (NULL) y conserva todo lo demás
+    after = _rows(url, "SELECT * FROM expenses ORDER BY 1")
+    assert [row[:-1] for row in after] == before["expenses"]
+    assert [row[-1] for row in after] == [None]
+
+
+def test_0005_se_niega_si_hay_un_ingreso_no_extra_pendiente(empty_database):
+    url, _ = empty_database
+    config = alembic_config(url)
+    command.upgrade(config, "0004_movements")
+    _execute(
+        url,
+        "INSERT INTO incomes (income_date, kind, budget_month, amount, original_amount, "
+        "allocation_status) VALUES ('2026-11-10', 'base', '2026-12', 9000, 9000, 'pendiente')",
+    )
+    with pytest.raises(RuntimeError, match="0005 cancelada"):
+        command.upgrade(config, "head")
+    assert _current_revision(url) == "0004_movements"
+
+
+def test_0005_downgrade_protegido(empty_database, monkeypatch):
+    url, _ = empty_database
+    config = alembic_config(url)
+    command.upgrade(config, "head")
+    _execute(url, TEMPLATE)
+    monkeypatch.delenv("ALLOW_DESTRUCTIVE_DOWNGRADE", raising=False)
+    with pytest.raises(RuntimeError, match="0005_extras_recurring cancelado"):
+        command.downgrade(config, "0004_movements")
+    assert _current_revision(url) == HEAD
+    assert _scalar(url, "SELECT count(*) FROM recurring_expenses") == 1
+
+    monkeypatch.setenv("ALLOW_DESTRUCTIVE_DOWNGRADE", "true")
+    command.downgrade(config, "0004_movements")
+    assert _current_revision(url) == "0004_movements"
+    assert _scalar(url, "SELECT to_regclass('public.recurring_expenses')") is None
+    command.upgrade(config, "head")  # y vuelve a subir
+    assert _current_revision(url) == HEAD
+
+
+def test_0005_downgrade_se_niega_con_un_extra(empty_database, monkeypatch):
+    url, _ = empty_database
+    config = alembic_config(url)
+    command.upgrade(config, "head")
+    _execute(url, PENDING_EXTRA)
+    monkeypatch.delenv("ALLOW_DESTRUCTIVE_DOWNGRADE", raising=False)
+    with pytest.raises(RuntimeError, match="ALLOW_DESTRUCTIVE_DOWNGRADE=true"):
+        command.downgrade(config, "0004_movements")
+
+
+def test_0005_restricciones_y_disparadores(empty_database):
+    url, _ = empty_database
+    command.upgrade(alembic_config(url), "head")
+    _execute(url, TEMPLATE)
+    _execute(
+        url,
+        "INSERT INTO recurring_expense_amounts (recurring_id, from_month, original_amount) "
+        "VALUES (1, '2026-11', 25000)",
+    )
+    payment = (
+        "INSERT INTO expenses (expense_date, month, pocket_id, original_amount, amount, "
+        "recurring_id) VALUES ('2026-11-10', '2026-11', 1, 25000, 25000, 1)"
+    )
+    _execute(url, payment)
+    bad = [
+        payment,  # segundo pago vigente del mismo fijo en el mes
+        TEMPLATE,  # nombre repetido entre los activos
+        "INSERT INTO recurring_expenses (name, currency, day_of_month, pocket_id, start_month) "
+        "VALUES ('Otro', 'CRC', 32, 1, '2026-11')",  # día 32
+        "INSERT INTO recurring_expenses (name, currency, day_of_month, pocket_id, start_month) "
+        "VALUES ('Otro', 'EUR', 1, 1, '2026-11')",  # moneda
+        "INSERT INTO recurring_expense_amounts VALUES (1, '2026-12', 0)",  # monto 0
+        "INSERT INTO incomes (income_date, kind, budget_month, amount, original_amount, "
+        "allocation_status) VALUES ('2026-11-10', 'base', '2026-12', 1, 1, 'pendiente')",
+        "INSERT INTO incomes (income_date, kind, budget_month, amount, original_amount, "
+        "allocation_status, source) VALUES ('2026-11-10', 'extra', '2026-11', 1, 1, "
+        "'pendiente', repeat('x', 121))",
+    ]
+    for sql in bad:
+        with pytest.raises(IntegrityError):
+            _execute(url, sql)
+    forbidden = [
+        "DELETE FROM recurring_expenses",
+        "DELETE FROM recurring_expense_amounts",
+        "UPDATE recurring_expenses SET currency = 'USD'",
+        "UPDATE recurring_expenses SET start_month = '2027-01'",
+        "UPDATE expenses SET recurring_id = NULL",
+    ]
+    for sql in forbidden:
+        with pytest.raises(IntegrityError, match="no se borran|no se cambian|RN-53"):
+            _execute(url, sql)
+    # Anulado el pago, el fijo admite otro en el mes
+    _execute(url, "UPDATE expenses SET voided = TRUE, voided_at = now(), void_reason = 'duplicado'")
+    _execute(url, payment)
+    # Desactivado, no se reactiva
+    _execute(url, "UPDATE recurring_expenses SET active = FALSE, deactivated_at = now()")
+    with pytest.raises(IntegrityError, match="no se reactiva"):
+        _execute(url, "UPDATE recurring_expenses SET active = TRUE, deactivated_at = NULL")
+    # Un reparto no vuelve a pendiente ni se hace sobre un ingreso anulado
+    # (los INSERT rechazados arriba consumieron valores de la secuencia: se usa el último id)
+    last = "WHERE id = (SELECT max(id) FROM incomes)"
+    _execute(url, PENDING_EXTRA)
+    _execute(url, f"UPDATE incomes SET allocation_status = 'repartido' {last}")
+    with pytest.raises(IntegrityError, match="reparto no se deshace"):
+        _execute(url, f"UPDATE incomes SET allocation_status = 'pendiente' {last}")
+    _execute(url, PENDING_EXTRA)
+    _execute(
+        url,
+        f"UPDATE incomes SET voided = TRUE, voided_at = now(), void_reason = 'duplicado' {last}",
+    )
+    with pytest.raises(IntegrityError, match="reparto no se deshace"):
+        _execute(url, f"UPDATE incomes SET allocation_status = 'repartido' {last}")

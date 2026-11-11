@@ -17,6 +17,7 @@ from puro_pockets.config import Settings
 from puro_pockets.domain.auth import LoginRateLimiter
 from puro_pockets.mcp.audit import OAuthAuditMiddleware
 from puro_pockets.mcp.budget_tools import register_budget_tools
+from puro_pockets.mcp.extras_tools import register_extras_tools
 from puro_pockets.mcp.ledger_tools import register_ledger_tools
 from puro_pockets.mcp.login import build_login_handler
 from puro_pockets.services.budget import BudgetService
@@ -44,6 +45,39 @@ def build_transport_security(settings: Settings) -> TransportSecuritySettings:
     return TransportSecuritySettings(
         enable_dns_rebinding_protection=True, allowed_hosts=hosts, allowed_origins=origins
     )
+
+
+# Instrucciones del servidor (InitializeResult.instructions; parámetro `instructions` de
+# MCPServer en mcp==2.3.0). Explican el flujo a Claude; no sustituyen la aprobación del
+# propietario.
+SERVER_INSTRUCTIONS = """\
+Puro Pockets: finanzas personales y manuales del propietario, en colones (CRC) y dólares (USD).
+La app calcula y valida; tú (Claude) interpretas y recomiendas; el propietario decide. Ninguna tool
+da consejos, y nada que reparta o mueva dinero se guarda sin la aprobación explícita del
+propietario.
+
+Reglas para todas las tools:
+- Montos enteros en colones; dólares como texto con hasta 2 decimales ("10.50"). En USD pide
+  siempre el tipo de cambio al propietario: nunca lo asumas ni reutilices uno anterior.
+- Cada escritura lleva un operation_id nuevo; repítelo solo para reintentar exactamente la misma
+  llamada.
+- Los movimientos se identifican como I-n (ingresos), G-n (gastos) y F-n (gastos fijos). Nada se
+  borra: un error se corrige con void_transaction y un registro nuevo.
+
+Ingreso extra (todo lo que no es el salario):
+1. register_extra_income: queda pendiente y "sin asignar".
+2. get_allocation_context con su referencia.
+3. Propón bolsas y porcentajes enteros que sumen 100, con una explicación breve basada en esos
+   datos (bolsas cortas, gastos fijos pendientes, repartos anteriores). Es una heurística de
+   presupuesto, no asesoría financiera.
+4. confirm_allocation con confirm=false: muestra la vista previa en colones.
+5. Espera que el propietario apruebe esa vista previa de forma explícita (o ajuste los
+   porcentajes y repite el paso 4). Una respuesta ambigua no es aprobación.
+6. Solo entonces confirm_allocation con confirm=true, el preview_token y un operation_id.
+
+Gastos fijos: manage_recurring crea y modifica plantillas; list_pending_recurring muestra qué falta
+pagar en el mes; el pago es add_expense con recurring.
+"""
 
 
 class PingResult(BaseModel):
@@ -91,10 +125,11 @@ def build_server(
     ledger: LedgerService | None = None,
 ) -> MCPServer:
     if auth is None:
-        server = MCPServer("puro-pockets")
+        server = MCPServer("puro-pockets", instructions=SERVER_INSTRUCTIONS)
     else:
         server = MCPServer(
             "puro-pockets",
+            instructions=SERVER_INSTRUCTIONS,
             auth=build_auth_settings(auth.provider, auth.registration_enabled),
             auth_server_provider=auth.provider,
         )
@@ -114,6 +149,8 @@ def build_server(
     if ledger is not None:
         # Movimientos (Hito 5), también detrás del token
         register_ledger_tools(server, ledger)
+        # Extras y gastos fijos (Hito 6), con el mismo servicio y también detrás del token
+        register_extras_tools(server, ledger)
 
     return server
 

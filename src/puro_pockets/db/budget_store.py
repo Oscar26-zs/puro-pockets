@@ -1,4 +1,4 @@
-"""Almacén SQL del presupuesto (SQLAlchemy Core). Tablas de las migraciones 0003 y 0004.
+"""Almacén SQL del presupuesto (SQLAlchemy Core). Tablas de las migraciones 0003 a 0005.
 
 Las lecturas de movimientos ignoran lo anulado (RN-53). Las escrituras del Hito 5 (ingresos base,
 gastos, anulaciones) están en `ledger_store.py`.
@@ -111,6 +111,29 @@ expenses = Table(
     Column("voided", Boolean, nullable=False),
     Column("voided_at", DateTime(timezone=True)),
     Column("void_reason", Text),
+    Column("recurring_id", BigInteger),
+)
+
+recurring_expenses = Table(
+    "recurring_expenses",
+    metadata,
+    Column("id", BigInteger, primary_key=True),
+    Column("name", Text, nullable=False),
+    Column("currency", Text, nullable=False),
+    Column("day_of_month", Integer, nullable=False),
+    Column("pocket_id", BigInteger, nullable=False),
+    Column("category_id", BigInteger),
+    Column("start_month", CHAR(7), nullable=False),
+    Column("active", Boolean, nullable=False),
+    Column("deactivated_at", DateTime(timezone=True)),
+)
+
+recurring_expense_amounts = Table(
+    "recurring_expense_amounts",
+    metadata,
+    Column("recurring_id", BigInteger, primary_key=True),
+    Column("from_month", CHAR(7), primary_key=True),
+    Column("original_amount", BigInteger, nullable=False),
 )
 
 idempotency_keys = Table(

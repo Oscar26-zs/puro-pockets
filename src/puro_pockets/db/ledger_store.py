@@ -1,7 +1,8 @@
-"""Almacén SQL de movimientos (Hito 5): salario, gastos, anulación, categorías y clave de operación.
+"""Almacén SQL de movimientos: salario, gastos, anulación, categorías y clave de operación (Hito 5);
+extras pendientes y su reparto, gastos fijos y sus pagos (Hito 6).
 
-Cada escritura guarda el movimiento y su clave de operación en una sola transacción (principio 3.6).
-Si otra llamada simultánea guardó la misma clave primero, la PK de `idempotency_keys` lo detecta: se
+Cada escritura guarda el cambio y su clave de operación en una sola transacción (principio 3.6). Si
+otra llamada simultánea guardó la misma clave primero, la PK de `idempotency_keys` lo detecta: se
 revierte todo y se lanza `OperationTaken` para que el servicio devuelva el resultado guardado.
 """
 
@@ -11,6 +12,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 
 from sqlalchemy import Connection, func, insert, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
 from puro_pockets.db.budget_store import (
@@ -23,26 +25,41 @@ from puro_pockets.db.budget_store import (
     income_allocations,
     incomes,
     insert_lines,
+    recurring_expense_amounts,
+    recurring_expenses,
 )
 from puro_pockets.domain.balances import IncomeKind
 from puro_pockets.domain.categories import Category
-from puro_pockets.domain.errors import AlreadyVoided, CategoryAlreadyExists, MovementNotFound
+from puro_pockets.domain.errors import (
+    AlreadyVoided,
+    CategoryAlreadyExists,
+    ExtraAlreadyDistributed,
+    MovementNotFound,
+    MovementVoided,
+    RecurringAlreadyPaid,
+    RecurringNameTaken,
+)
 from puro_pockets.domain.ledger import MovementKind, MovementRef
 from puro_pockets.domain.money import Currency
 from puro_pockets.domain.months import Month
+from puro_pockets.domain.recurring import RecurringRef, RecurringTemplate
 from puro_pockets.services.budget import AllocationLine
-from puro_pockets.services.ledger import (
+from puro_pockets.services.records import (
     ExpenseRow,
     IncomeRow,
     NewExpense,
     NewIncome,
+    NewRecurring,
     Operation,
     OperationTaken,
+    RecurringChange,
     StoredOperation,
 )
 
 OPERATION_PK = "idempotency_keys_pkey"
 CATEGORY_NAME_INDEX = "ux_categories_name_ci"
+PAYMENT_INDEX = "ux_expenses_recurring_month"
+RECURRING_NAME_INDEX = "ux_recurring_expenses_name_active"
 
 
 def _income_row(r) -> IncomeRow:
@@ -57,6 +74,8 @@ def _income_row(r) -> IncomeRow:
         r.amount,
         r.voided,
         r.void_reason,
+        r.allocation_status == "pendiente",
+        r.source,
     )
 
 
@@ -74,6 +93,7 @@ def _expense_row(r) -> ExpenseRow:
         r.amount,
         r.voided,
         r.void_reason,
+        r.recurring_id,
     )
 
 
@@ -88,6 +108,8 @@ INCOME_COLUMNS = (
     incomes.c.amount,
     incomes.c.voided,
     incomes.c.void_reason,
+    incomes.c.allocation_status,
+    incomes.c.source,
 )
 EXPENSE_COLUMNS = (
     expenses.c.id,
@@ -102,7 +124,9 @@ EXPENSE_COLUMNS = (
     expenses.c.amount,
     expenses.c.voided,
     expenses.c.void_reason,
+    expenses.c.recurring_id,
 )
+LIVE_EXTRA = (incomes.c.kind == IncomeKind.EXTRA.value) & incomes.c.voided.is_(False)
 
 
 class SqlLedgerStore(SqlBudgetStore):
@@ -138,7 +162,7 @@ class SqlLedgerStore(SqlBudgetStore):
             raise
         return response
 
-    # --- Escrituras ---
+    # --- Ingresos ---
 
     def record_income(
         self,
@@ -159,14 +183,50 @@ class SqlLedgerStore(SqlBudgetStore):
                     currency=money.currency.value,
                     original_amount=money.original_amount,
                     exchange_rate=money.exchange_rate,
-                    allocation_status="repartido",
+                    allocation_status="pendiente" if income.pending else "repartido",
+                    source=income.source,
                 )
                 .returning(incomes.c.id)
             ).scalar_one()
-            insert_lines(conn, income_id, lines)
+            if lines:
+                insert_lines(conn, income_id, lines)
             return respond(income_id)
 
         return self._write(operation, work)
+
+    def distribute_extra(
+        self,
+        income_id: int,
+        lines: Sequence[AllocationLine],
+        operation: Operation,
+        respond: Callable[[], dict],
+    ) -> dict:
+        ref = str(MovementRef(MovementKind.INCOME, income_id))
+
+        def work(conn: Connection) -> dict:
+            # Pasa de pendiente a repartido una sola vez: dos confirmaciones simultáneas con claves
+            # distintas no reparten dos veces (la segunda ya no encuentra la fila pendiente)
+            changed = conn.execute(
+                update(incomes)
+                .where(
+                    (incomes.c.id == income_id)
+                    & (incomes.c.kind == IncomeKind.EXTRA.value)
+                    & (incomes.c.allocation_status == "pendiente")
+                    & incomes.c.voided.is_(False)
+                )
+                .values(allocation_status="repartido")
+            ).rowcount
+            if changed == 0:
+                voided = conn.execute(
+                    select(incomes.c.voided).where(incomes.c.id == income_id)
+                ).scalar()
+                raise MovementVoided(ref) if voided else ExtraAlreadyDistributed(ref)
+            insert_lines(conn, income_id, lines)
+            return respond()
+
+        return self._write(operation, work)
+
+    # --- Gastos y anulación ---
 
     def record_expense(
         self, expense: NewExpense, operation: Operation, respond: Callable[[int], dict]
@@ -185,12 +245,20 @@ class SqlLedgerStore(SqlBudgetStore):
                     original_amount=money.original_amount,
                     exchange_rate=money.exchange_rate,
                     amount=money.amount_crc,
+                    recurring_id=expense.recurring_id,
                 )
                 .returning(expenses.c.id)
             ).scalar_one()
             return respond(expense_id)
 
-        return self._write(operation, work)
+        try:
+            return self._write(operation, work)
+        except IntegrityError as exc:
+            if constraint_name(exc) == PAYMENT_INDEX and expense.recurring_id is not None:
+                raise RecurringAlreadyPaid(
+                    str(RecurringRef(expense.recurring_id)), str(expense.month)
+                ) from None
+            raise
 
     def void_movement(
         self,
@@ -309,3 +377,164 @@ class SqlLedgerStore(SqlBudgetStore):
                     )
                 ).scalar_one()
             )
+
+    def extra_income_total(self, month: Month) -> int:
+        with self._engine.connect() as conn:
+            return int(
+                conn.execute(
+                    select(func.coalesce(func.sum(incomes.c.amount), 0)).where(
+                        LIVE_EXTRA
+                        & (incomes.c.allocation_status == "repartido")
+                        & (incomes.c.budget_month == str(month))
+                    )
+                ).scalar_one()
+            )
+
+    def pending_extras(self) -> list[IncomeRow]:
+        query = (
+            select(*INCOME_COLUMNS)
+            .where(LIVE_EXTRA & (incomes.c.allocation_status == "pendiente"))
+            .order_by(incomes.c.id)
+        )
+        with self._engine.connect() as conn:
+            return [_income_row(r) for r in conn.execute(query).all()]
+
+    def distributed_extras(self, limit: int) -> list[IncomeRow]:
+        query = (
+            select(*INCOME_COLUMNS)
+            .where(LIVE_EXTRA & (incomes.c.allocation_status == "repartido"))
+            .order_by(incomes.c.income_date.desc(), incomes.c.id.desc())
+            .limit(limit)
+        )
+        with self._engine.connect() as conn:
+            return [_income_row(r) for r in conn.execute(query).all()]
+
+    # --- Gastos fijos (Hito 6) ---
+
+    def list_recurring(self) -> list[RecurringTemplate]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(select(recurring_expenses).order_by(recurring_expenses.c.id)).all()
+            amounts: dict[int, list[tuple[Month, int]]] = {}
+            for a in conn.execute(
+                select(recurring_expense_amounts).order_by(
+                    recurring_expense_amounts.c.recurring_id,
+                    recurring_expense_amounts.c.from_month,
+                )
+            ).all():
+                amounts.setdefault(a.recurring_id, []).append(
+                    (Month.parse(a.from_month), a.original_amount)
+                )
+        return [
+            RecurringTemplate(
+                r.id,
+                r.name,
+                Currency(r.currency),
+                r.day_of_month,
+                r.pocket_id,
+                r.category_id,
+                Month.parse(r.start_month),
+                r.active,
+                tuple(amounts.get(r.id, ())),
+            )
+            for r in rows
+        ]
+
+    def _recurring_write(self, operation: Operation, work: Callable[[Connection], dict]) -> dict:
+        try:
+            return self._write(operation, work)
+        except IntegrityError as exc:
+            if constraint_name(exc) == RECURRING_NAME_INDEX:
+                raise RecurringNameTaken() from None
+            raise
+
+    def create_recurring(
+        self, new: NewRecurring, operation: Operation, respond: Callable[[int], dict]
+    ) -> dict:
+        def work(conn: Connection) -> dict:
+            recurring_id = conn.execute(
+                insert(recurring_expenses)
+                .values(
+                    name=new.name,
+                    currency=new.currency.value,
+                    day_of_month=new.day_of_month,
+                    pocket_id=new.pocket_id,
+                    category_id=new.category_id,
+                    start_month=str(new.start_month),
+                )
+                .returning(recurring_expenses.c.id)
+            ).scalar_one()
+            conn.execute(
+                insert(recurring_expense_amounts).values(
+                    recurring_id=recurring_id,
+                    from_month=str(new.start_month),
+                    original_amount=new.original_amount,
+                )
+            )
+            return respond(recurring_id)
+
+        return self._recurring_write(operation, work)
+
+    def update_recurring(
+        self, change: RecurringChange, operation: Operation, respond: Callable[[], dict]
+    ) -> dict:
+        def work(conn: Connection) -> dict:
+            values = {
+                key: value
+                for key, value in (
+                    ("name", change.name),
+                    ("day_of_month", change.day_of_month),
+                    ("pocket_id", change.pocket_id),
+                    ("category_id", change.category_id),
+                )
+                if value is not None
+            }
+            if values:
+                conn.execute(
+                    update(recurring_expenses)
+                    .where(recurring_expenses.c.id == change.recurring_id)
+                    .values(**values)
+                )
+            if change.amount is not None:
+                since, amount = change.amount
+                statement = pg_insert(recurring_expense_amounts).values(
+                    recurring_id=change.recurring_id,
+                    from_month=str(since),
+                    original_amount=amount,
+                )
+                conn.execute(
+                    statement.on_conflict_do_update(
+                        index_elements=["recurring_id", "from_month"],
+                        set_={"original_amount": statement.excluded.original_amount},
+                    )
+                )
+            return respond()
+
+        return self._recurring_write(operation, work)
+
+    def deactivate_recurring(
+        self,
+        recurring_id: int,
+        at: datetime,
+        operation: Operation,
+        respond: Callable[[], dict],
+    ) -> dict:
+        def work(conn: Connection) -> dict:
+            conn.execute(
+                update(recurring_expenses)
+                .where((recurring_expenses.c.id == recurring_id) & recurring_expenses.c.active)
+                .values(active=False, deactivated_at=at)
+            )
+            return respond()
+
+        return self._write(operation, work)
+
+    def recurring_payments(self, month: Month) -> dict[int, int]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                select(expenses.c.recurring_id, expenses.c.id).where(
+                    expenses.c.recurring_id.is_not(None)
+                    & (expenses.c.month == str(month))
+                    & LIVE_EXPENSE
+                )
+            ).all()
+        return {r.recurring_id: r.id for r in rows}
