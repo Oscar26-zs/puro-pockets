@@ -9,13 +9,15 @@ from functools import partial
 from sqlalchemy import Engine
 
 from puro_pockets.config import ConfigError, Settings, load_settings
-from puro_pockets.db.budget_store import SqlBudgetStore
 from puro_pockets.db.engine import check_database, create_engine_from_settings
+from puro_pockets.db.ledger_store import SqlLedgerStore
 from puro_pockets.db.oauth_store import SqlOAuthStore
 from puro_pockets.domain.auth import LoginRateLimiter
+from puro_pockets.domain.money import RateRange
 from puro_pockets.mcp.server import AuthComponents, build_server, run_server
 from puro_pockets.services.budget import BudgetService, local_today
 from puro_pockets.services.health import HealthService
+from puro_pockets.services.ledger import LedgerService
 from puro_pockets.services.oauth import OAuthConfig, OwnerOAuthProvider
 from puro_pockets.services.passwords import PasswordVerifier
 
@@ -86,9 +88,19 @@ def main() -> None:
     health = HealthService(
         partial(check_database, engine), timeout_seconds=settings.db_connect_timeout + 1
     )
-    budget = BudgetService(SqlBudgetStore(engine), today=local_today(settings.app_timezone))
-    logger.info("Presupuesto: zona horaria=%s", settings.app_timezone)
-    run_server(build_server(health, build_auth(settings, engine), budget), settings)
+    today = local_today(settings.app_timezone)
+    store = SqlLedgerStore(engine)
+    budget = BudgetService(store, today=today)
+    ledger = LedgerService(
+        store, today=today, rate_range=RateRange(settings.usd_rate_min, settings.usd_rate_max)
+    )
+    logger.info(
+        "Presupuesto: zona horaria=%s tipo de cambio aceptado=%s..%s colones por dólar",
+        settings.app_timezone,
+        settings.usd_rate_min,
+        settings.usd_rate_max,
+    )
+    run_server(build_server(health, build_auth(settings, engine), budget, ledger), settings)
 
 
 if __name__ == "__main__":

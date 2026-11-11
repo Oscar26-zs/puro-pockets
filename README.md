@@ -123,7 +123,13 @@ vez en cuando. El archivo va **fuera del repositorio** (por ejemplo, en `~/respa
 mkdir -p ~/respaldos
 docker compose exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc'   > ~/respaldos/puro-pockets-$(date +%Y%m%d-%H%M).dump
 ls -lh ~/respaldos                      # el archivo no debe pesar 0 bytes
+# Verificar que se puede leer (lista las tablas que contiene)
+docker compose exec -T db pg_restore -l < ~/respaldos/puro-pockets-AAAAMMDD-HHMM.dump | grep "TABLE DATA"
 ```
+
+Estos comandos son para bash (el homelab). En PowerShell de Windows la redirección `>` re-codifica
+la salida y daña un archivo binario: allí genera el respaldo dentro del contenedor
+(`pg_dump ... -Fc -f /tmp/respaldo.dump`) y cópialo con `docker compose cp db:/tmp/respaldo.dump .`.
 
 Restaurar (solo en una base vacía; borra lo que haya en las tablas que restaura):
 
@@ -459,9 +465,39 @@ Bolsas, porcentajes por mes y saldo inicial. Todas las tools exigen el inicio de
   Necesidades 50, Ahorro 30, Gustos 20".
 - **Mes actual:** según `APP_TIMEZONE` (por defecto `America/Costa_Rica`).
 - **Saldo inicial:** pertenece al mes en que lo cargas y no cuenta como ingreso del mes. Revisa bien la
-  vista previa: no hay forma de borrarlo; un error se corrige con la anulación del Hito 5.
+  vista previa: no hay forma de borrarlo; un error se corrige anulándolo con `void_transaction`
+  (Hito 5) y cargándolo de nuevo.
 - **Actualizar el homelab:** haz un [respaldo](#respaldo-manual-de-la-base), luego
   `git pull`, `docker compose up -d --build` y `docker compose exec mcp alembic upgrade head`.
+
+## Movimientos (Hito 5)
+
+Salario, gastos en colones o dólares, anulación y consultas. Todas las tools exigen el inicio de
+sesión del Hito 3.
+
+| Tool | Qué hace |
+|---|---|
+| `preview_income` | Vista previa del salario: mes presupuestario y reparto por bolsa (no guarda nada). |
+| `add_income` | Registra el salario y lo reparte con los porcentajes del mes siguiente a su fecha (u otro mes indicado); exige `confirm=true` y `operation_id`. |
+| `add_expense` | Registra un gasto contra cualquier bolsa; si la deja en negativo, se guarda y avisa. |
+| `void_transaction` | Anula un ingreso o gasto con motivo (sin borrarlo); exige `confirm=true` para anular. |
+| `get_bolsa_status` | Asignado, gastado, disponible y % usado (consumo) o saldo (acumulable) de una bolsa. |
+| `get_summary` | Resumen del mes: ingresos (sin saldo inicial), gastos y estado de cada bolsa. |
+| `top_categories` | En qué categorías gastas más en el mes. |
+| `list_transactions` | Movimientos recientes con su referencia (`I-3`, `G-12`); 20 por defecto, máximo 100. |
+| `create_category` / `list_categories` | Categorías de gasto con su bolsa por defecto. |
+
+- **Dólares:** cada movimiento en USD necesita el tipo de cambio que tú indiques; si falta, se rechaza
+  (nunca se asume). El equivalente en colones se calcula una vez (redondeo half-up) y no cambia
+  después. Rango aceptado: `USD_RATE_MIN`..`USD_RATE_MAX` (por defecto 300 a 1000 colones por dólar).
+  Los decimales viajan como texto (`"10.50"`, `"512.34"`); Claude lo hace solo.
+- **Salario de fin de mes:** el del 30 de noviembre se reparte con los porcentajes de diciembre.
+- **Reintentos:** cada escritura lleva una clave de operación (`operation_id`); si Claude repite la
+  misma llamada, no se duplica.
+- **Nada se borra:** la base rechaza borrar o editar movimientos; solo se anulan.
+- **Migración `0004_movements`:** conserva tus datos del Hito 4 (el saldo inicial queda en colones).
+  Haz un [respaldo](#respaldo-manual-de-la-base) antes de aplicarla. Su downgrade se niega si hay
+  gastos o anulaciones, salvo con `ALLOW_DESTRUCTIVE_DOWNGRADE=true` (solo en desarrollo).
 
 ## Estructura
 

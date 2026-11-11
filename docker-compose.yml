@@ -46,6 +46,9 @@ services:
       OAUTH_SHORT_LIFETIMES: ${OAUTH_SHORT_LIFETIMES:-false}
       # Zona del propietario: define el "mes actual" del presupuesto (Hito 4)
       APP_TIMEZONE: ${APP_TIMEZONE:-America/Costa_Rica}
+      # Rango aceptado del tipo de cambio, colones por dólar (Hito 5)
+      USD_RATE_MIN: ${USD_RATE_MIN:-300}
+      USD_RATE_MAX: ${USD_RATE_MAX:-1000}
     ports:
       # Solo para pruebas locales. Desde internet se llega únicamente por el túnel, que alcanza
       # este servicio por la red interna de Docker (http://mcp:8000).

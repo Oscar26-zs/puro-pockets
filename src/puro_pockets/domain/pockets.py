@@ -50,5 +50,16 @@ def resolve_named(
     return resolved
 
 
+def find_pocket(pockets: Iterable[Pocket], name: object) -> Pocket:
+    """Bolsa activa por nombre (sin distinguir mayúsculas)."""
+    if isinstance(name, str):
+        key = normalize_name(name)
+        for pocket in pockets:
+            if pocket.active and normalize_name(pocket.name) == key:
+                return pocket
+    label = name.strip() if isinstance(name, str) else str(name)
+    raise DomainError(f"La bolsa '{label}' no existe o está archivada.")
+
+
 def is_plain_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)

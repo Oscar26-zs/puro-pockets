@@ -1,6 +1,6 @@
 # Constitución de Puro Pockets
 
-**Versión:** 1.0.0
+**Versión:** 1.0.1
 **Ratificada:** 2026-11-09
 **Propietario:** Oscar Zúñiga ("TosTar")
 
@@ -125,8 +125,8 @@ Usuario: "Me entraron 40.000 extra"
 
 ### 5.4 Monedas: colones y dólares
 - **RN-55 [DECIDIDO]:** la app soporta **colones (CRC) y dólares (USD)** en ingresos, gastos y gastos fijos.
-- **RN-56 [PROPUESTO]:** la **moneda base es el colón**. Todos los cálculos (presupuestos, saldos, porcentajes, estadísticas) se hacen en colones enteros. Un movimiento en dólares se convierte a colones al registrarlo.
-- **RN-57 [PROPUESTO]:** cada movimiento en USD guarda **su moneda original, su monto original (en centavos) y el tipo de cambio usado**. El equivalente en colones se calcula una vez y **no se recalcula** después, para que el historial no cambie cuando cambia el dólar.
+- **RN-56 [DECIDIDO]:** la **moneda base es el colón**. Todos los cálculos (presupuestos, saldos, porcentajes, estadísticas) se hacen en colones enteros. Un movimiento en dólares se convierte a colones al registrarlo.
+- **RN-57 [DECIDIDO]:** cada movimiento en USD guarda **su moneda original, su monto original (en centavos) y el tipo de cambio usado**. El equivalente en colones se calcula una vez y **no se recalcula** después, para que el historial no cambie cuando cambia el dólar.
 - Conversión (tipo de cambio guardado como entero: colones por dólar × 100):
 
 ```
@@ -136,7 +136,7 @@ Ejemplo: USD 10,00 a ₡512,34  →  1 000 × 51 234 / 10 000 = 5 123,4  →  �
 ```
 
 - En el dashboard, los totales se muestran en colones. Mostrar un equivalente en dólares es opcional.
-- Los detalles de esta política (fuente del tipo de cambio, ahorros que se quieran conservar en dólares) están en la decisión abierta #12.
+- Los detalles de esta política (fuente del tipo de cambio, ahorros que se quieran conservar en dólares) están en la decisión #12, resuelta el 2026-11-10.
 
 ### 5.5 Saldo inicial **[DECIDIDO]**
 - **RN-54:** la app **arranca con una carga de saldo inicial**: el dinero que ya existe al comenzar, repartido por **montos explícitos** entre las bolsas (no por porcentajes). Claude puede ayudar a proponer el reparto.
@@ -368,12 +368,17 @@ Los ingresos pendientes de repartir quedan fuera de la igualdad y se muestran ap
 | 9 | Despliegue del MCP | **Resuelta en lo principal:** MCP remoto por HTTPS con túnel de Cloudflare, para usarlo desde claude.ai y el celular. **Pendiente:** el servidor de autorización de OAuth se decide en el Hito 3 (ver `HITOS.md`). |
 | 10 | Stack | **Python** para el MCP. |
 
+### 14.1.1 Resueltas el 2026-11-10
+
+| # | Tema | Decisión |
+|---|---|---|
+| 12 | Monedas, detalles | (a) El tipo de cambio lo indica el propietario en cada movimiento en USD; si falta, la tool devuelve error y **nunca lo asume**. (b) Todo se convierte a colones al registrar (RN-56). (c) Las metas son solo en colones. (d) Los gastos fijos en USD no se tratan aquí: se definen en el Hito 6. |
+
 ### 14.2 Abiertas y aplazadas
 
 | # | Tema | Estado | Pregunta | Recomendación actual |
 |---|---|---|---|---|
 | 11 | Metas por bolsa | **[ABIERTO]** | ¿Una bolsa puede tener varias metas activas o solo una? (RN-22) | Una sola meta activa por bolsa. Para otra meta, se crea otra bolsa acumulable. Evita el avance ambiguo al compartir el mismo dinero. |
-| 12 | Monedas, detalles | **[ABIERTO]** | (a) ¿De dónde sale el tipo de cambio: lo escribes tú, o Claude lo busca? (b) ¿Quieres poder **conservar saldos en dólares** (por ejemplo, un ahorro en USD) o todo se convierte a colones al entrar? (c) ¿Las metas pueden tener objetivo en dólares? (d) Gastos fijos en USD: ¿qué tipo de cambio se usa al generarlos cada mes? | (a) Lo indicas tú al registrar (manual); Claude puede sugerir el último usado. (b) Todo se convierte a colones al entrar (RN-56), por simplicidad. (c) Metas solo en colones. (d) El último tipo de cambio usado, confirmado por ti. |
 
 
 ---
@@ -432,7 +437,7 @@ su número.
   cambio PATCH.
 - Si una enmienda toca una regla `RN-xx`, se revisan las specs que la citan.
 
-**Versión**: 1.0.0 | **Ratificada**: 2026-11-09 | **Última enmienda**: 2026-11-09
+**Versión**: 1.0.1 | **Ratificada**: 2026-11-09 | **Última enmienda**: 2026-11-10
 
 ---
 
@@ -441,3 +446,4 @@ su número.
 | Versión | Fecha | Cambio |
 |---|---|---|
 | 1.0.0 | 2026-11-09 | Ratificación inicial, derivada del documento de origen v0.3. |
+| 1.0.1 | 2026-11-10 | PATCH aprobado por el propietario: la decisión #12 (detalles de monedas) pasa a resuelta (sección 14.1.1) y RN-56 y RN-57 pasan de [PROPUESTO] a [DECIDIDO] (RN-55 ya lo estaba). No cambia el significado de ninguna regla. |

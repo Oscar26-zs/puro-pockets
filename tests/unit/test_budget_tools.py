@@ -159,11 +159,19 @@ def test_suma_110_rechazada_en_espanol(mcp, store):
     assert store.allocations == {}
 
 
-def test_porcentaje_decimal_rechazado_en_espanol(mcp):
-    pcts = [{"pocket": "Necesidades", "percentage": 50.5}]
-    assert "porcentaje debe ser un entero" in _error_text(
-        mcp.call("set_allocation", percentages=pcts)
+def test_porcentaje_decimal_rechazado_en_espanol_sin_mostrar_el_valor(mcp):
+    for value in (50.5, 50.0, "50", True):
+        pcts = [{"pocket": "Necesidades", "percentage": value}]
+        text = _error_text(mcp.call("set_allocation", percentages=pcts))
+        assert "porcentaje de Necesidades debe ser un entero" in text
+        assert "input_value" not in text and "50" not in text.replace("2026", "")
+
+
+def test_monto_decimal_del_saldo_inicial_no_se_muestra(mcp):
+    text = _error_text(
+        mcp.call("load_initial_balance", amounts=[{"pocket": "Ahorro", "amount": 523_717.5}])
     )
+    assert "monto de Ahorro" in text and "523717" not in text.replace(".", "").replace(",", "")
 
 
 def test_mes_pasado_rechazado(mcp):

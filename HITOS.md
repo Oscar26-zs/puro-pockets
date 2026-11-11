@@ -1,6 +1,6 @@
 # Puro Pockets: hoja de ruta por hitos
 
-**Versión:** 0.7 (borrador)
+**Versión:** 0.8 (borrador)
 **Fecha:** 2026-11-09
 **Fuentes de verdad:** reglas en `.specify/memory/constitution.md` (referenciadas como `RN-xx`); técnica en `docs/plan-tecnico.md`.
 **Este documento define:** qué entrega cada hito, en qué orden y cuándo se considera terminado. No repite reglas de negocio ni el esquema de datos: los referencia.
@@ -39,10 +39,10 @@ Las reglas no negociables (datos reales, capa de negocio, invariante de integrid
 | 2 | Acceso remoto sin datos | Túnel con dominio propio, deploy en homelab, conector en claude.ai | (técnico) |
 | 3 | Autenticación | OAuth: solo tú puedes usar el MCP | (seguridad) |
 | 4 | Bolsas y porcentajes | Bolsas, porcentajes por mes, saldo inicial | RN-01 a 03, 10 a 12, 54 |
-| 5 | Ingresos base y gastos | Reparto del salario, gastos, CRC/USD, anulación (**MVP**) | RN-31 a 34, 37, 38, 53, 55 a 57 |
+| 5 | Ingresos base y gastos | Reparto del salario, gastos, CRC/USD, anulación (**MVP**) | RN-02, 03, 08 (reparto), 31 a 34, 37, 38, 53, 55 a 57, 59 |
 | 6 | Extras y gastos fijos | Reparto de extras recomendado por Claude, gastos fijos | RN-04 a 09, 35, 36 |
 | 7 | Bolsas flexibles y metas | Crear y archivar bolsas con reajuste, metas | RN-13 a 30 |
-| 8 | Transferencias | Mover dinero entre bolsas con registro | RN-39 a 45, 58, 59 |
+| 8 | Transferencias | Mover dinero entre bolsas con registro | RN-39 a 45, 58 |
 | 9 | Cierre de mes | Déficits, sobrantes y cierre atómico | RN-46 a 52 |
 | 10 | Dashboard | Estadísticas y gráficos | Sección 13 del plan técnico |
 | 11 | Operación y endurecimiento | Respaldos probados, monitoreo, revisión de seguridad | (no funcional) |
@@ -55,7 +55,6 @@ El **MVP usable** llega al terminar el Hito 5: puedes cargar tu saldo inicial, r
 
 | Decisión pendiente | Debe resolverse antes de | Dónde se resuelve |
 |---|---|---|
-| #12 Detalles de monedas (tipo de cambio manual, gastos fijos en USD) | Hito 5 | Constitución, sección 14 |
 | #11 Una sola meta activa por bolsa | Hito 7 | Constitución, sección 14 |
 | Framework de la API para el dashboard | Hito 10 | `/speckit-clarify` del Hito 10 |
 
@@ -243,16 +242,16 @@ El SDK de MCP para Python implementa el lado del **servidor de recursos** de OAu
 **Objetivo:** el ciclo diario de uso. Al terminar, la app ya sirve para llevar tus finanzas.
 
 ### Entregables
-- **Tablas:** `ingresos` (con moneda, tipo de cambio, anulación), `income_allocations`, `gastos`.
-- **Ingreso base:** el salario de fin de mes se asigna al mes siguiente y se reparte con los porcentajes de ese mes (sección 5.1 de la constitución).
-- **Gastos:** contra cualquier bolsa, con categoría opcional (RN-31 a 34).
-- **Monedas:** colones y dólares; conversión a colones al registrar, con el tipo de cambio guardado en el movimiento (RN-55 a 57).
+- **Tablas** (migración `0004_movements`, que conserva los datos del Hito 4): moneda, monto original, tipo de cambio y anulación en `incomes`; `expenses`; `idempotency_keys`.
+- **Ingreso base:** el salario de fin de mes se asigna al mes siguiente (u otro mes indicado) y se reparte con los porcentajes de ese mes o heredados (sección 5.1 de la constitución; RN-02, 03, 08). Con vista previa (`preview_income`; sin `confirm` no guarda).
+- **Gastos:** contra cualquier bolsa, con categoría opcional (RN-31 a 34). Categorías con bolsa por defecto.
+- **Monedas:** colones y dólares; conversión a colones al registrar, con el tipo de cambio indicado por el propietario y guardado en el movimiento (RN-55 a 57, decisión #12). Sin `float`.
 - **Sobregasto:** no se bloquea; se registra y se advierte (RN-37, 38).
-- **Anulación con registro**, solo en mes abierto (RN-53, 59).
+- **Anulación con registro**, solo en mes abierto (todos abiertos hasta el Hito 9) (RN-53, 59). Incluye el saldo inicial, que después puede volver a cargarse (RN-54).
 - **Cálculos oficiales** de bolsa de consumo y acumulable (sección 11.1 y 11.2).
-- **Tools:** `add_income`, `add_expense`, `void_transaction`, `get_bolsa_status`, `list_transactions`, `get_summary`, `top_categories`.
-- **Prueba del invariante de integridad** (sección 11.4), creada en el Hito 4, se extiende a ingresos y gastos, ejecutada contra datos generados.
-- **Idempotencia** en las tools que escriben (clave de operación).
+- **Tools:** `preview_income`, `add_income`, `add_expense`, `void_transaction`, `get_bolsa_status`, `list_transactions`, `get_summary`, `top_categories`, `create_category`, `list_categories`.
+- **Prueba del invariante de integridad** (sección 11.4), creada en el Hito 4, se extiende a ingresos repartidos, gastos, anulaciones y USD, ejecutada contra datos generados.
+- **Idempotencia** en las tools que escriben (clave de operación `operation_id`).
 
 ### Prompt para /speckit-specify
 > El propietario quiere registrar desde Claude su salario y sus gastos, en colones o dólares. El salario que entra a fin de mes se reparte entre las bolsas según los porcentajes del mes siguiente. Quiere ver cuánto lleva gastado y cuánto le queda en cada bolsa, ver en qué gasta más, y anular un movimiento mal registrado dejando constancia. Un gasto que excede una bolsa se registra igual y avisa. Incluye pruebas automáticas que verifiquen los criterios de aceptación.
@@ -263,6 +262,8 @@ El SDK de MCP para Python implementa el lado del **servidor de recursos** de OAu
 - Un gasto que deja una bolsa en negativo se guarda y la respuesta advierte.
 - Anulas un gasto, y desaparece de los cálculos pero sigue en el historial.
 - Repetir la misma llamada no duplica el gasto.
+- Un movimiento en USD sin tipo de cambio se rechaza.
+- La migración conserva los datos del Hito 4 (el saldo inicial queda en colones) y su downgrade está protegido.
 - La prueba del invariante pasa.
 - **Prueba de uso real:** usas la app una semana con tus gastos verdaderos y anotas fricciones antes de seguir.
 
@@ -421,3 +422,4 @@ Cómo se generan los gastos fijos: ¿automáticamente cada mes (requiere un proc
 | 0.5 | 2026-11-09 | Se quita el SDK de MCP de las decisiones pendientes (decidido: `mcp==2.3.0` con `MCPServer`). El "Terminado cuando" del Hito 1 precisa que en GitHub Actions corren ruff y las pruebas unitarias, y las de integración en el equipo de desarrollo. |
 | 0.6 | 2026-11-09 | Se quita de la sección 3 la decisión del servidor de autorización de OAuth (decidido en el Hito 3: propio y mínimo, para un único usuario; registrado en `docs/plan-tecnico.md`). |
 | 0.7 | 2026-11-10 | Hito 4: se agrega `preview_initial_balance` a sus tools (principio 3.2 de la constitución; registrado en `docs/plan-tecnico.md` v0.6). La prueba del invariante de integridad empieza en el Hito 4, el primero que registra dinero (regla no negociable 3 de la constitución, que prevalece); el Hito 5 la extiende. Los datos iniciales son solo las bolsas; el 50/30/20 lo guarda el propietario (decisión del 2026-11-10). |
+| 0.8 | 2026-11-10 | Se quita de la sección 3 la decisión #12 (resuelta; constitución 1.0.1). Hito 5: tablas con nombres en inglés (`incomes`, `expenses`, `idempotency_keys`) y migración que conserva los datos del Hito 4; tools `preview_income` (principio 3.2), `create_category` y `list_categories`; anulación del saldo inicial; RN-59 pasa del Hito 8 al Hito 5 en la vista general (sus entregables ya la citaban) y se agregan RN-02, 03 y 08 por el reparto del salario; dos criterios más en "Terminado cuando" (USD sin tipo de cambio; migración y downgrade). |

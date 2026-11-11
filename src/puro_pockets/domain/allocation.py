@@ -93,3 +93,16 @@ def split_amount[K](amount: int, shares: Sequence[tuple[K, int]]) -> list[tuple[
     result = [(key, amount * pct // 100) for key, pct in shares[:-1]]
     result.append((shares[-1][0], amount - sum(part for _, part in result)))
     return result
+
+
+def allocate_by_percentages[K](
+    amount: int, items: Sequence[tuple[K, int]]
+) -> list[tuple[K, int, int]]:
+    """Reparto de un ingreso por porcentajes: (clave, porcentaje, monto) para cada bolsa.
+
+    RN-08 se aplica entre las bolsas que reciben (porcentaje > 0): la última de ellas absorbe el
+    residuo. Una bolsa con 0 % recibe 0, aunque sea la última por orden de creación.
+    """
+    receiving = [(key, pct) for key, pct in items if pct > 0]
+    parts = iter(split_amount(amount, receiving))
+    return [(key, pct, next(parts)[1] if pct > 0 else 0) for key, pct in items]

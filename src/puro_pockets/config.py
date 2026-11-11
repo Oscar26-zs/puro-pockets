@@ -19,6 +19,10 @@ SHORT_LIFETIMES = {"access": 120, "refresh": 900, "code": 300}
 # Zona del propietario: define el "mes actual" (Hito 4)
 DEFAULT_TIMEZONE = "America/Costa_Rica"
 
+# Rango razonable del tipo de cambio, en colones por dólar (Hito 5, decisión #12)
+DEFAULT_USD_RATE_MIN = 300
+DEFAULT_USD_RATE_MAX = 1000
+
 
 class ConfigError(RuntimeError):
     """Configuración faltante o inválida. El mensaje nunca incluye valores."""
@@ -45,6 +49,9 @@ class Settings:
     oauth_auth_code_ttl: int = NORMAL_LIFETIMES["code"]
     # Presupuesto (Hito 4)
     app_timezone: str = DEFAULT_TIMEZONE
+    # Movimientos (Hito 5): rango aceptado del tipo de cambio, colones por dólar (inclusivo)
+    usd_rate_min: int = DEFAULT_USD_RATE_MIN
+    usd_rate_max: int = DEFAULT_USD_RATE_MAX
 
 
 def _required(env: Mapping[str, str], name: str) -> str:
@@ -89,6 +96,17 @@ def _timezone(env: Mapping[str, str], name: str) -> str:
     return value
 
 
+def _rate_range(env: Mapping[str, str]) -> tuple[int, int]:
+    low = _int(env, "USD_RATE_MIN", DEFAULT_USD_RATE_MIN)
+    high = _int(env, "USD_RATE_MAX", DEFAULT_USD_RATE_MAX)
+    if low <= 0 or low >= high:
+        raise ConfigError(
+            "USD_RATE_MIN y USD_RATE_MAX deben ser enteros positivos, con USD_RATE_MIN menor que "
+            "USD_RATE_MAX (colones por dólar)."
+        )
+    return low, high
+
+
 def _csv(env: Mapping[str, str], name: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in env.get(name, "").split(",") if item.strip())
 
@@ -104,6 +122,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     )
     resource = env.get("OAUTH_RESOURCE_URL", "").strip() or f"{issuer}/mcp"
     lifetimes = SHORT_LIFETIMES if _bool(env, "OAUTH_SHORT_LIFETIMES", False) else NORMAL_LIFETIMES
+    rate_min, rate_max = _rate_range(env)
 
     return Settings(
         database_url=_required(env, "DATABASE_URL"),
@@ -123,4 +142,6 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         oauth_refresh_token_ttl=_int(env, "OAUTH_REFRESH_TOKEN_TTL_SECONDS", lifetimes["refresh"]),
         oauth_auth_code_ttl=_int(env, "OAUTH_AUTH_CODE_TTL_SECONDS", lifetimes["code"]),
         app_timezone=_timezone(env, "APP_TIMEZONE"),
+        usd_rate_min=rate_min,
+        usd_rate_max=rate_max,
     )

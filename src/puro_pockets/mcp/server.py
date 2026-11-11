@@ -17,9 +17,11 @@ from puro_pockets.config import Settings
 from puro_pockets.domain.auth import LoginRateLimiter
 from puro_pockets.mcp.audit import OAuthAuditMiddleware
 from puro_pockets.mcp.budget_tools import register_budget_tools
+from puro_pockets.mcp.ledger_tools import register_ledger_tools
 from puro_pockets.mcp.login import build_login_handler
 from puro_pockets.services.budget import BudgetService
 from puro_pockets.services.health import HealthService
+from puro_pockets.services.ledger import LedgerService
 from puro_pockets.services.oauth import SCOPE_MCP, VALID_SCOPES, OwnerOAuthProvider
 from puro_pockets.services.passwords import PasswordVerifier
 
@@ -86,6 +88,7 @@ def build_server(
     health_service: HealthService,
     auth: AuthComponents | None = None,
     budget: BudgetService | None = None,
+    ledger: LedgerService | None = None,
 ) -> MCPServer:
     if auth is None:
         server = MCPServer("puro-pockets")
@@ -108,6 +111,9 @@ def build_server(
     if budget is not None:
         # Presupuesto (Hito 4). Con auth, todas las tools quedan detrás del token
         register_budget_tools(server, budget)
+    if ledger is not None:
+        # Movimientos (Hito 5), también detrás del token
+        register_ledger_tools(server, ledger)
 
     return server
 
