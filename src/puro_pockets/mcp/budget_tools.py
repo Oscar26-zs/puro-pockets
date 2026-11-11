@@ -1,5 +1,7 @@
 """Tools del presupuesto (Hito 4). Contrato: specs/004-bolsas-porcentajes/contracts/tools.md.
 
+Desde el Hito 5 los enteros no aceptan decimales (50.0 se rechaza: ningún `float`).
+
 Las tools son delgadas: convierten la entrada, llaman al servicio y traducen `DomainError` a
 `ToolError` (el cliente recibe is_error con el mensaje en español). Los mensajes nunca incluyen
 montos, porque el SDK los registra. Las bolsas se identifican por nombre; no se exponen ids.
@@ -7,48 +9,28 @@ montos, porque el SDK los registra. Las bolsas se identifican por nombre; no se 
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from functools import wraps
-from typing import Any, Literal
+from typing import Literal
 
 from mcp.server.mcpserver import MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from puro_pockets.domain.allocation import ResolvedAllocation
-from puro_pockets.domain.errors import DomainError
+from puro_pockets.mcp.inputs import MONTH_DESCRIPTION, WholeNumberInput
+from puro_pockets.mcp.inputs import domain_errors as _domain_errors
 from puro_pockets.services.budget import BudgetService, InitialBalanceView
 
-MONTH_DESCRIPTION = "Mes en formato AAAA-MM. Si se omite, el mes actual (America/Costa_Rica)."
-
-
-def _whole_number(value: Any, message: str) -> Any:
-    """Acepta enteros (y 50.0); rechaza decimales, texto y booleanos con un mensaje en español."""
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        raise ValueError(message)
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError(message)
-    return int(value)
+# Porcentajes y montos pasan sin validar a la capa de dominio, que exige enteros (rechaza 50.0) con
+# mensajes sin el valor recibido: el error de pydantic lo incluiría y el SDK lo registra.
 
 
 class PocketPercentage(BaseModel):
     pocket: str = Field(description="Nombre de la bolsa (sin distinguir mayúsculas).")
-    percentage: int = Field(description="Porcentaje entero entre 0 y 100.")
-
-    @field_validator("percentage", mode="before")
-    @classmethod
-    def _int_percentage(cls, value: Any) -> Any:
-        return _whole_number(value, "El porcentaje debe ser un entero entre 0 y 100.")
+    percentage: WholeNumberInput = Field(description="Porcentaje entero entre 0 y 100.")
 
 
 class PocketAmount(BaseModel):
     pocket: str = Field(description="Nombre de la bolsa (sin distinguir mayúsculas).")
-    amount: int = Field(description="Monto en colones, entero mayor o igual a 0.")
-
-    @field_validator("amount", mode="before")
-    @classmethod
-    def _int_amount(cls, value: Any) -> Any:
-        return _whole_number(value, "El monto debe ser un entero de colones mayor o igual a 0.")
+    amount: WholeNumberInput = Field(description="Monto en colones, entero mayor o igual a 0.")
 
 
 class AllocationItem(BaseModel):
@@ -90,17 +72,6 @@ class PocketStatus(BaseModel):
 class PocketsResult(BaseModel):
     month: str = Field(description="Mes actual.")
     pockets: list[PocketStatus]
-
-
-def _domain_errors[**P, R](fn: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
-    @wraps(fn)
-    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-        try:
-            return await fn(*args, **kwargs)
-        except DomainError as exc:
-            raise ToolError(exc.message) from None
-
-    return wrapper
 
 
 def _allocation(resolved: ResolvedAllocation) -> AllocationResult:
@@ -173,7 +144,8 @@ def register_budget_tools(server: MCPServer, service: BudgetService) -> None:
     ) -> InitialBalanceResult:
         """Carga el saldo inicial, una sola vez (RN-54). No cuenta como ingreso del mes.
 
-        Exige confirm=true; sin él devuelve la vista previa. Una segunda carga se rechaza.
+        Exige confirm=true; sin él devuelve la vista previa. Una segunda carga se rechaza, salvo
+        que el saldo inicial vigente se haya anulado con void_transaction.
         """
         pairs = [(item.pocket, item.amount) for item in amounts]
         return _initial(await service.load_initial_balance(pairs, confirm=confirm))

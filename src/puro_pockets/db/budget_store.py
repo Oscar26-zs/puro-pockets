@@ -1,4 +1,8 @@
-"""Almacén SQL del presupuesto (SQLAlchemy Core). Tablas de la migración 0003_budget."""
+"""Almacén SQL del presupuesto (SQLAlchemy Core). Tablas de las migraciones 0003 y 0004.
+
+Las lecturas de movimientos ignoran lo anulado (RN-53). Las escrituras del Hito 5 (ingresos base,
+gastos, anulaciones) están en `ledger_store.py`.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +15,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     Date,
+    DateTime,
     Engine,
     Integer,
     MetaData,
@@ -21,10 +26,12 @@ from sqlalchemy import (
     insert,
     select,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 
-from puro_pockets.domain.balances import AllocationEntry, IncomeKind
+from puro_pockets.domain.balances import AllocationEntry, ExpenseEntry, IncomeKind
 from puro_pockets.domain.errors import InitialBalanceAlreadyLoaded
+from puro_pockets.domain.money import Currency
 from puro_pockets.domain.months import Month
 from puro_pockets.domain.pockets import Behavior, Pocket
 from puro_pockets.services.budget import AllocationLine
@@ -39,6 +46,15 @@ pockets = Table(
     Column("behavior", Text, nullable=False),
     Column("group_name", Text),
     Column("surplus_target_pocket_id", BigInteger),
+    Column("active", Boolean, nullable=False),
+)
+
+categories = Table(
+    "categories",
+    metadata,
+    Column("id", BigInteger, primary_key=True),
+    Column("name", Text, nullable=False),
+    Column("pocket_id", BigInteger, nullable=False),
     Column("active", Boolean, nullable=False),
 )
 
@@ -61,6 +77,12 @@ incomes = Table(
     Column("amount", BigInteger, nullable=False),
     Column("allocation_status", Text, nullable=False),
     Column("note", Text),
+    Column("currency", Text, nullable=False),
+    Column("original_amount", BigInteger, nullable=False),
+    Column("exchange_rate", BigInteger),
+    Column("voided", Boolean, nullable=False),
+    Column("voided_at", DateTime(timezone=True)),
+    Column("void_reason", Text),
 )
 
 income_allocations = Table(
@@ -73,7 +95,40 @@ income_allocations = Table(
     Column("amount", BigInteger, nullable=False),
 )
 
+expenses = Table(
+    "expenses",
+    metadata,
+    Column("id", BigInteger, primary_key=True),
+    Column("expense_date", Date, nullable=False),
+    Column("month", CHAR(7), nullable=False),
+    Column("pocket_id", BigInteger, nullable=False),
+    Column("category_id", BigInteger),
+    Column("description", Text),
+    Column("currency", Text, nullable=False),
+    Column("original_amount", BigInteger, nullable=False),
+    Column("exchange_rate", BigInteger),
+    Column("amount", BigInteger, nullable=False),
+    Column("voided", Boolean, nullable=False),
+    Column("voided_at", DateTime(timezone=True)),
+    Column("void_reason", Text),
+)
+
+idempotency_keys = Table(
+    "idempotency_keys",
+    metadata,
+    Column("operation_id", Text, primary_key=True),
+    Column("tool", Text, nullable=False),
+    Column("fingerprint", CHAR(64), nullable=False),
+    Column("response", JSONB, nullable=False),
+)
+
 INITIAL_BALANCE_INDEX = "ux_incomes_single_initial_balance"
+LIVE_INCOME = (incomes.c.allocation_status == "repartido") & incomes.c.voided.is_(False)
+LIVE_EXPENSE = expenses.c.voided.is_(False)
+
+
+def constraint_name(exc: IntegrityError) -> str | None:
+    return getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
 
 
 class SqlBudgetStore:
@@ -130,7 +185,10 @@ class SqlBudgetStore:
                 conn.execute(
                     select(func.count())
                     .select_from(incomes)
-                    .where(incomes.c.kind == IncomeKind.INITIAL_BALANCE.value)
+                    .where(
+                        (incomes.c.kind == IncomeKind.INITIAL_BALANCE.value)
+                        & incomes.c.voided.is_(False)
+                    )
                 ).scalar()
             )
 
@@ -141,6 +199,8 @@ class SqlBudgetStore:
         budget_month: Month,
         lines: Sequence[AllocationLine],
     ) -> int:
+        """Ingreso en colones ya repartido (saldo inicial) y sus repartos, en una transacción."""
+        total = sum(line.amount for line in lines)
         try:
             with self._engine.begin() as conn:
                 income_id = conn.execute(
@@ -149,26 +209,16 @@ class SqlBudgetStore:
                         income_date=income_date,
                         kind=kind.value,
                         budget_month=str(budget_month),
-                        amount=sum(line.amount for line in lines),
+                        amount=total,
+                        currency=Currency.CRC.value,
+                        original_amount=total,
                         allocation_status="repartido",
                     )
                     .returning(incomes.c.id)
                 ).scalar_one()
-                conn.execute(
-                    insert(income_allocations),
-                    [
-                        {
-                            "income_id": income_id,
-                            "pocket_id": line.pocket_id,
-                            "percentage": line.percentage,
-                            "amount": line.amount,
-                        }
-                        for line in lines
-                    ],
-                )
+                insert_lines(conn, income_id, lines)
         except IntegrityError as exc:
-            constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
-            if constraint == INITIAL_BALANCE_INDEX:
+            if constraint_name(exc) == INITIAL_BALANCE_INDEX:
                 raise InitialBalanceAlreadyLoaded() from None
             raise
         return income_id
@@ -185,7 +235,7 @@ class SqlBudgetStore:
                 .select_from(
                     income_allocations.join(incomes, incomes.c.id == income_allocations.c.income_id)
                 )
-                .where(incomes.c.allocation_status == "repartido")
+                .where(LIVE_INCOME)
             ).all()
         return [
             AllocationEntry(r.pocket_id, Month.parse(r.budget_month), r.amount, IncomeKind(r.kind))
@@ -197,8 +247,39 @@ class SqlBudgetStore:
         with self._engine.connect() as conn:
             return int(
                 conn.execute(
-                    select(func.coalesce(func.sum(incomes.c.amount), 0)).where(
-                        incomes.c.allocation_status == "repartido"
-                    )
+                    select(func.coalesce(func.sum(incomes.c.amount), 0)).where(LIVE_INCOME)
                 ).scalar_one()
             )
+
+    def expense_entries(self) -> list[ExpenseEntry]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                select(expenses.c.pocket_id, expenses.c.month, expenses.c.amount).where(
+                    LIVE_EXPENSE
+                )
+            ).all()
+        return [ExpenseEntry(r.pocket_id, Month.parse(r.month), r.amount) for r in rows]
+
+    def expense_total(self) -> int:
+        """Σ gastos vigentes, consultado directamente sobre `expenses` (invariante)."""
+        with self._engine.connect() as conn:
+            return int(
+                conn.execute(
+                    select(func.coalesce(func.sum(expenses.c.amount), 0)).where(LIVE_EXPENSE)
+                ).scalar_one()
+            )
+
+
+def insert_lines(conn, income_id: int, lines: Sequence[AllocationLine]) -> None:
+    conn.execute(
+        insert(income_allocations),
+        [
+            {
+                "income_id": income_id,
+                "pocket_id": line.pocket_id,
+                "percentage": line.percentage,
+                "amount": line.amount,
+            }
+            for line in lines
+        ],
+    )

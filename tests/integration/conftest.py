@@ -107,13 +107,15 @@ def budget_engine(_session_database) -> Iterator[Engine]:
 
 
 def reset_budget(engine: Engine, expected_name: str, pockets=SEED_POCKETS) -> None:
-    """Vacía las tablas del presupuesto y deja las bolsas indicadas (por defecto, las iniciales)."""
+    """Vacía las tablas del presupuesto y de movimientos (solo en la base temporal) y deja las
+    bolsas indicadas (por defecto, las iniciales). TRUNCATE no dispara los disparadores por fila
+    del libro mayor, que solo protegen contra DELETE y UPDATE."""
     assert_temp_database(engine.url.render_as_string(hide_password=False), expected_name)
     with engine.begin() as conn:
         conn.execute(
             text(
-                "TRUNCATE income_allocations, incomes, budget_month_allocations, categories, "
-                "pockets RESTART IDENTITY CASCADE"
+                "TRUNCATE idempotency_keys, expenses, income_allocations, incomes, "
+                "budget_month_allocations, categories, pockets RESTART IDENTITY CASCADE"
             )
         )
         for pocket_name, behavior in pockets:

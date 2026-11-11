@@ -146,3 +146,27 @@ def test_zona_horaria_por_defecto_y_configurable():
 def test_zona_horaria_invalida_da_error_claro():
     with pytest.raises(ConfigError, match="APP_TIMEZONE"):
         load_settings({"DATABASE_URL": "x", "APP_TIMEZONE": "Marte/Olympus"})
+
+
+# --- Movimientos (Hito 5) ---
+
+
+def test_rango_del_tipo_de_cambio_por_defecto_y_configurable():
+    default = load_settings({"DATABASE_URL": "x"})
+    assert (default.usd_rate_min, default.usd_rate_max) == (300, 1000)
+    custom = load_settings({"DATABASE_URL": "x", "USD_RATE_MIN": "400", "USD_RATE_MAX": "700"})
+    assert (custom.usd_rate_min, custom.usd_rate_max) == (400, 700)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"USD_RATE_MIN": "800", "USD_RATE_MAX": "500"},
+        {"USD_RATE_MIN": "0"},
+        {"USD_RATE_MIN": "500", "USD_RATE_MAX": "500"},
+        {"USD_RATE_MAX": "mil"},
+    ],
+)
+def test_rango_del_tipo_de_cambio_invalido_da_error_claro(env):
+    with pytest.raises(ConfigError, match="USD_RATE_M"):
+        load_settings({"DATABASE_URL": "x", **env})

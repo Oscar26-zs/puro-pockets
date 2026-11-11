@@ -1,5 +1,8 @@
 """Casos de uso del presupuesto (Hito 4): porcentajes por mes, saldo inicial y saldos de bolsas.
 
+Desde el Hito 5 los saldos restan los gastos e ignoran lo anulado, y el saldo inicial puede volver a
+cargarse tras anular el vigente (RN-54, RN-53).
+
 Las reglas viven en `domain/`; aquí se orquesta el almacén y el reloj. El almacén es síncrono
 (psycopg 3 en modo síncrono), así que sus llamadas corren en un hilo. Los registros nunca
 incluyen montos ni saldos.
@@ -24,7 +27,13 @@ from puro_pockets.domain.allocation import (
     resolve_allocation,
     validate_allocation,
 )
-from puro_pockets.domain.balances import AllocationEntry, IncomeKind, PocketBalance, pocket_balance
+from puro_pockets.domain.balances import (
+    AllocationEntry,
+    ExpenseEntry,
+    IncomeKind,
+    PocketBalance,
+    pocket_balance,
+)
 from puro_pockets.domain.errors import InitialBalanceAlreadyLoaded
 from puro_pockets.domain.initial_balance import validate_initial_balance
 from puro_pockets.domain.months import Month
@@ -45,7 +54,10 @@ class AllocationLine:
 
 
 class BudgetStore(Protocol):
-    """Almacén del presupuesto. Cada método es una transacción propia."""
+    """Almacén del presupuesto. Cada método es una transacción propia.
+
+    Las lecturas de movimientos solo devuelven los vigentes: lo anulado no cuenta (RN-53).
+    """
 
     def list_pockets(self) -> list[Pocket]: ...
 
@@ -55,7 +67,9 @@ class BudgetStore(Protocol):
 
     def replace_allocation(self, month: Month, rows: Mapping[int, int]) -> None: ...
 
-    def has_initial_balance(self) -> bool: ...
+    def has_initial_balance(self) -> bool:
+        """True si hay un saldo inicial vigente (no anulado)."""
+        ...
 
     def record_distributed_income(
         self,
@@ -73,6 +87,10 @@ class BudgetStore(Protocol):
     def allocation_entries(self) -> list[AllocationEntry]: ...
 
     def distributed_income_total(self) -> int: ...
+
+    def expense_entries(self) -> list[ExpenseEntry]: ...
+
+    def expense_total(self) -> int: ...
 
 
 @dataclass(frozen=True)
@@ -190,4 +208,7 @@ class BudgetService:
         current = self.current_month()
         pockets = ordered_active(self._store.list_pockets())
         entries = self._store.allocation_entries()
-        return PocketsView(current, tuple(pocket_balance(p, entries, current) for p in pockets))
+        expenses = self._store.expense_entries()
+        return PocketsView(
+            current, tuple(pocket_balance(p, entries, current, expenses) for p in pockets)
+        )
