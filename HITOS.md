@@ -1,6 +1,6 @@
 # Puro Pockets: hoja de ruta por hitos
 
-**Versión:** 0.6 (borrador)
+**Versión:** 0.7 (borrador)
 **Fecha:** 2026-11-09
 **Fuentes de verdad:** reglas en `.specify/memory/constitution.md` (referenciadas como `RN-xx`); técnica en `docs/plan-tecnico.md`.
 **Este documento define:** qué entrega cada hito, en qué orden y cuándo se considera terminado. No repite reglas de negocio ni el esquema de datos: los referencia.
@@ -222,8 +222,9 @@ El SDK de MCP para Python implementa el lado del **servidor de recursos** de OAu
 - **Tablas** (con migración): `bolsas`, `categorias`, `budget_month_allocations`, y el registro de ingresos necesario para el saldo inicial.
 - **Lógica de dominio:** validación de que los porcentajes sumen 100 (RN-01), copia de porcentajes del mes anterior (RN-03), reparto en enteros con residuo en la última bolsa (RN-08), comportamientos `consumo` y `acumulable` (RN-10 a 12).
 - **Datos iniciales:** Necesidades (consumo) 50 %, Ahorro (acumulable) 30 % y Gustos (consumo) 20 %.
-- **Tools:** `set_allocation`, `get_allocation`, `load_initial_balance`, `list_bolsas`.
+- **Tools:** `set_allocation`, `get_allocation`, `preview_initial_balance`, `load_initial_balance`, `list_bolsas`.
 - **Saldo inicial** (RN-54): una sola vez, por montos explícitos, que no cuenta como ingreso del mes.
+- **Prueba del invariante de integridad** (sección 11.4) contra datos sintéticos: este es el primer hito que registra dinero (gobernanza, regla no negociable 3).
 
 ### Prompt para /speckit-specify
 > El propietario quiere definir sus bolsas de dinero (Necesidades, Gustos y Ahorro) y los porcentajes en que se reparte su ingreso cada mes, y cargar una vez el saldo con el que arranca, repartido por montos entre las bolsas. Los porcentajes deben sumar 100, quedar guardados por mes y poder cambiarse sin alterar meses anteriores. Incluye pruebas automáticas que verifiquen los criterios de aceptación.
@@ -233,6 +234,7 @@ El SDK de MCP para Python implementa el lado del **servidor de recursos** de OAu
 - Cargas un saldo inicial y `list_bolsas` muestra el saldo de cada bolsa.
 - Cambiar los porcentajes del mes siguiente no modifica el mes anterior.
 - Hay pruebas del reparto con residuo (por ejemplo, ₡10.001 entre tres bolsas suma exactamente ₡10.001).
+- La prueba del invariante pasa con el saldo inicial.
 
 ---
 
@@ -249,7 +251,7 @@ El SDK de MCP para Python implementa el lado del **servidor de recursos** de OAu
 - **Anulación con registro**, solo en mes abierto (RN-53, 59).
 - **Cálculos oficiales** de bolsa de consumo y acumulable (sección 11.1 y 11.2).
 - **Tools:** `add_income`, `add_expense`, `void_transaction`, `get_bolsa_status`, `list_transactions`, `get_summary`, `top_categories`.
-- **Prueba del invariante de integridad** (sección 11.4), ejecutada contra datos generados.
+- **Prueba del invariante de integridad** (sección 11.4), creada en el Hito 4, se extiende a ingresos y gastos, ejecutada contra datos generados.
 - **Idempotencia** en las tools que escriben (clave de operación).
 
 ### Prompt para /speckit-specify
@@ -418,3 +420,4 @@ Cómo se generan los gastos fijos: ¿automáticamente cada mes (requiere un proc
 | 0.4 | 2026-11-09 | El transporte Streamable HTTP pasa del Hito 2 al Hito 1 (clarificación de la spec `001-cimientos`); en el Hito 2 se expone por el túnel. |
 | 0.5 | 2026-11-09 | Se quita el SDK de MCP de las decisiones pendientes (decidido: `mcp==2.3.0` con `MCPServer`). El "Terminado cuando" del Hito 1 precisa que en GitHub Actions corren ruff y las pruebas unitarias, y las de integración en el equipo de desarrollo. |
 | 0.6 | 2026-11-09 | Se quita de la sección 3 la decisión del servidor de autorización de OAuth (decidido en el Hito 3: propio y mínimo, para un único usuario; registrado en `docs/plan-tecnico.md`). |
+| 0.7 | 2026-11-10 | Hito 4: se agrega `preview_initial_balance` a sus tools (principio 3.2 de la constitución; registrado en `docs/plan-tecnico.md` v0.6). La prueba del invariante de integridad empieza en el Hito 4, el primero que registra dinero (regla no negociable 3 de la constitución, que prevalece); el Hito 5 la extiende. |
