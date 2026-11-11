@@ -15,7 +15,7 @@ from .conftest import alembic_config
 
 pytestmark = pytest.mark.integration
 
-HEAD = "0006_pockets_goals"
+HEAD = "0007_transfers"
 
 
 def _scalar(url: str, sql: str, **params):
@@ -569,3 +569,110 @@ def test_0006_restricciones_y_disparadores(empty_database):
     _execute(url, "UPDATE pockets SET active = FALSE, archived_at = now() WHERE name = 'Gustos'")
     with pytest.raises(IntegrityError, match="no se reactiva"):
         _execute(url, "UPDATE pockets SET active = TRUE, archived_at = NULL WHERE name = 'Gustos'")
+
+
+# --- Hito 8: 0007_transfers ---
+
+HITO7_DATA = (
+    *HITO6_DATA,
+    GOAL,
+    "INSERT INTO pockets (name, behavior) VALUES ('Viaje sintético', 'consumo')",
+    "UPDATE pockets SET active = FALSE, archived_at = '2026-11-11T12:00:00Z' "
+    "WHERE name = 'Viaje sintético'",
+)
+TRANSFER = (
+    "INSERT INTO transfers (transfer_date, month, from_pocket_id, to_pocket_id, amount, reason) "
+    "VALUES ('2026-11-11', '2026-11', 1, 3, 5000, 'cubrir_sobregasto')"
+)
+
+
+def test_0007_conserva_los_datos_del_hito_7(empty_database):
+    url, name = empty_database
+    assert_temp_database(url, name)
+    config = alembic_config(url)
+    command.upgrade(config, "0006_pockets_goals")
+    for sql in HITO7_DATA:
+        _execute(url, sql)
+    tables = (
+        "pockets",
+        "savings_goals",
+        "incomes",
+        "income_allocations",
+        "expenses",
+        "idempotency_keys",
+        "recurring_expenses",
+        "recurring_expense_amounts",
+        "budget_month_allocations",
+        "categories",
+    )
+    before = {table: _rows(url, f"SELECT * FROM {table} ORDER BY 1, 2") for table in tables}
+    assert before["savings_goals"] and before["expenses"]  # hay datos que conservar
+
+    command.upgrade(config, "head")
+    assert _current_revision(url) == HEAD
+    for table in tables:
+        assert _rows(url, f"SELECT * FROM {table} ORDER BY 1, 2") == before[table], table
+    assert _scalar(url, "SELECT count(*) FROM transfers") == 0
+
+
+def test_0007_downgrade_protegido(empty_database, monkeypatch):
+    url, _ = empty_database
+    config = alembic_config(url)
+    command.upgrade(config, "head")
+    _execute(url, TRANSFER)
+    monkeypatch.delenv("ALLOW_DESTRUCTIVE_DOWNGRADE", raising=False)
+    with pytest.raises(RuntimeError, match="0007_transfers cancelado"):
+        command.downgrade(config, "0006_pockets_goals")
+    assert _current_revision(url) == HEAD
+    assert _scalar(url, "SELECT count(*) FROM transfers") == 1
+
+    monkeypatch.setenv("ALLOW_DESTRUCTIVE_DOWNGRADE", "true")
+    command.downgrade(config, "0006_pockets_goals")
+    assert _scalar(url, "SELECT to_regclass('public.transfers')") is None
+    command.upgrade(config, "head")
+    assert _current_revision(url) == HEAD
+
+
+def test_0007_downgrade_sin_transferencias_no_pide_la_variable(empty_database, monkeypatch):
+    url, _ = empty_database
+    config = alembic_config(url)
+    command.upgrade(config, "head")
+    monkeypatch.delenv("ALLOW_DESTRUCTIVE_DOWNGRADE", raising=False)
+    command.downgrade(config, "0006_pockets_goals")
+    assert _current_revision(url) == "0006_pockets_goals"
+
+
+def test_0007_restricciones_y_disparador(empty_database):
+    url, _ = empty_database
+    command.upgrade(alembic_config(url), "head")
+    columns = "transfer_date, month, from_pocket_id, to_pocket_id, amount, reason, note"
+
+    def row(values: str) -> str:
+        return f"INSERT INTO transfers ({columns}) VALUES ({values})"
+
+    _execute(url, TRANSFER)
+    _execute(url, row("'2026-11-11', '2026-11', 2, 1, 1, 'cierre_de_mes', NULL"))  # reservado: sí
+    _execute(url, row(f"'2026-11-11', '2026-11', 1, 2, 1, 'ajuste', '{'n' * 140}'"))
+    bad = [
+        row("'2026-11-11', '2026-11', 1, 3, 0, 'ajuste', NULL"),  # monto 0
+        row("'2026-11-11', '2026-11', 1, 3, -5, 'ajuste', NULL"),  # negativo
+        row("'2026-11-11', '2026-11', 2, 2, 5, 'ajuste', NULL"),  # mismo origen y destino
+        row("'2026-11-11', '2026-11', 1, 3, 5, 'regalo', NULL"),  # motivo inválido
+        row("'2026-11-11', '2026-13', 1, 3, 5, 'ajuste', NULL"),  # mes inválido
+        row("'2026-11-11', '26-11', 1, 3, 5, 'ajuste', NULL"),  # formato de mes
+        row(f"'2026-11-11', '2026-11', 1, 3, 5, 'ajuste', '{'n' * 141}'"),  # nota de 141
+        row("'2026-11-11', '2026-11', 1, 999, 5, 'ajuste', NULL"),  # bolsa inexistente (FK)
+    ]
+    for sql in bad:
+        with pytest.raises(IntegrityError):
+            _execute(url, sql)
+    for sql in ("UPDATE transfers SET amount = 1", "DELETE FROM transfers WHERE id = 1"):
+        with pytest.raises(IntegrityError, match="no se edita ni se borra"):
+            _execute(url, sql)
+    assert _scalar(url, "SELECT count(*) FROM transfers") == 3
+    rules = _rows(
+        url,
+        "SELECT confdeltype FROM pg_constraint WHERE conrelid = 'transfers'::regclass "
+        "AND contype = 'f'",
+    )
+    assert rules == [("r",), ("r",)]  # ON DELETE RESTRICT en las dos claves foráneas

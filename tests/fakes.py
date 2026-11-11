@@ -5,7 +5,12 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import date
 
-from puro_pockets.domain.balances import AllocationEntry, ExpenseEntry, IncomeKind
+from puro_pockets.domain.balances import (
+    AllocationEntry,
+    ExpenseEntry,
+    IncomeKind,
+    TransferEntry,
+)
 from puro_pockets.domain.categories import Category
 from puro_pockets.domain.errors import (
     AlreadyVoided,
@@ -31,6 +36,7 @@ from puro_pockets.services.ledger import (
     StoredOperation,
 )
 from puro_pockets.services.oauth import CodeRecord, TokenRecord
+from puro_pockets.services.records import LedgerSnapshot, TransferRow
 
 
 class InMemoryOAuthStore:
@@ -137,6 +143,7 @@ class InMemoryBudgetStore:
         self.operations = {}  # operation_id -> StoredOperation
         self.recurring = []  # RecurringTemplate
         self.goals = []  # Goal
+        self.transfers = []  # TransferRow (nunca se editan ni se borran, RN-43)
         self.writes = 0
 
     def list_pockets(self):
@@ -209,9 +216,17 @@ class InMemoryBudgetStore:
     def expense_total(self):
         return sum(e.amount for e in self.expenses if not e.voided)
 
+    def transfer_entries(self):
+        return [
+            TransferEntry(t.from_pocket_id, t.to_pocket_id, t.month, t.amount)
+            for t in self.transfers
+        ]
+
     def _settle_goals(self, on):
         """Como el almacén SQL: `reached` con el saldo oficial (11.2), en la misma operación."""
-        balance_of = balance_function(self.allocation_entries(), self.expense_entries())
+        balance_of = balance_function(
+            self.allocation_entries(), self.expense_entries(), self.transfer_entries()
+        )
         hits = dict(reached(self.goals, balance_of, on))
         self.goals = [
             replace(g, status=GoalStatus.ACHIEVED, achieved_on=hits[g.id]) if g.id in hits else g
@@ -476,9 +491,24 @@ class InMemoryLedgerStore(InMemoryBudgetStore):
         self._save_operation(operation, response)
         return response
 
-    def archive_pocket(self, pocket_id, at, months, operation, respond):
+    def _snapshot(self, pocket_ids):
+        ids = set(pocket_ids)
+        return LedgerSnapshot(
+            {p.id: p for p in self.pockets if p.id in ids},
+            [e for e in self.allocation_entries() if e.pocket_id in ids],
+            [e for e in self.expense_entries() if e.pocket_id in ids],
+            [
+                t
+                for t in self.transfer_entries()
+                if t.from_pocket_id in ids or t.to_pocket_id in ids
+            ],
+        )
+
+    def archive_pocket(self, pocket_id, at, months, operation, respond, verify=None):
         if operation.operation_id in self.operations:
             raise OperationTaken()
+        if verify is not None:
+            verify(self._snapshot([pocket_id]))
         self.writes += 1
         self.pockets = [replace(p, active=False) if p.id == pocket_id else p for p in self.pockets]
         self.goals = [
@@ -540,3 +570,37 @@ class InMemoryLedgerStore(InMemoryBudgetStore):
         response = respond()
         self._save_operation(operation, response)
         return response
+
+    # --- Transferencias (Hito 8) ---
+
+    def record_transfer(self, new, operation, verify, on):
+        if operation.operation_id in self.operations:
+            raise OperationTaken()
+        respond = verify(self._snapshot([new.from_pocket_id, new.to_pocket_id]))
+        self.writes += 1
+        transfer_id = len(self.transfers) + 1
+        self.transfers.append(
+            TransferRow(
+                transfer_id,
+                new.transfer_date,
+                new.month,
+                new.from_pocket_id,
+                new.to_pocket_id,
+                new.amount,
+                new.reason,
+                new.note,
+            )
+        )
+        self._settle_goals(on)
+        response = respond(transfer_id)
+        self._save_operation(operation, response)
+        return response
+
+    def list_transfers(self, month, pocket_id, limit):
+        rows = [
+            t
+            for t in self.transfers
+            if (month is None or t.month == month)
+            and (pocket_id is None or pocket_id in (t.from_pocket_id, t.to_pocket_id))
+        ]
+        return sorted(rows, key=lambda t: (t.transfer_date, t.id), reverse=True)[:limit]

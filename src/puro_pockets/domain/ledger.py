@@ -1,7 +1,8 @@
 """Movimientos del libro mayor (Hito 5): referencias, fechas, mes del salario, motivo y descripción.
 
-Las referencias públicas son cortas (`I-3` para ingresos, `G-12` para gastos) y no exponen otros
-identificadores internos. Los mensajes de error nunca incluyen montos ni descripciones.
+Las referencias públicas son cortas (`I-3` para ingresos, `G-12` para gastos; `T-5` para las
+transferencias del Hito 8, que no se anulan) y no exponen otros identificadores internos. Los
+mensajes de error nunca incluyen montos ni descripciones.
 """
 
 from __future__ import annotations
@@ -11,13 +12,14 @@ from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
 
-from puro_pockets.domain.errors import DomainError
+from puro_pockets.domain.errors import DomainError, TransfersAreFinal
 from puro_pockets.domain.months import Month
 
 MAX_DESCRIPTION = 120
 MIN_REASON, MAX_REASON = 3, 200
 
 _REF = re.compile(r"^\s*([IiGg])\s*-\s*([0-9]{1,18})\s*$")
+_TRANSFER_REF = re.compile(r"^\s*[Tt]\s*-\s*([0-9]{1,18})\s*$")
 _DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 
 
@@ -37,6 +39,9 @@ class MovementRef:
 
     @classmethod
     def parse(cls, text: object) -> MovementRef:
+        transfer = _TRANSFER_REF.match(text) if isinstance(text, str) else None
+        if transfer is not None:  # RN-43: las transferencias no se anulan ni se editan
+            raise TransfersAreFinal(f"T-{int(transfer.group(1))}")
         match = _REF.match(text) if isinstance(text, str) else None
         if match is None or int(match.group(2)) < 1:
             raise DomainError(

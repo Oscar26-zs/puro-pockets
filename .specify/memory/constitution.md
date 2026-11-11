@@ -1,6 +1,6 @@
 # Constitución de Puro Pockets
 
-**Versión:** 1.0.3
+**Versión:** 1.0.4
 **Ratificada:** 2026-11-09
 **Propietario:** Oscar Zúñiga ("TosTar")
 
@@ -251,7 +251,7 @@ Principio: **el dinero es uno solo**. Si una bolsa se pasó, ese dinero salió d
 - **RN-43:** las transferencias **nunca se editan ni se borran**. Un error se corrige con una transferencia en sentido contrario.
 - **RN-44:** un mes cerrado no admite transferencias nuevas.
 - **RN-45 [DEROGADA en v0.2]:** *(antes: una transferencia podía tener como destino una meta.)* Las metas no reciben dinero: se transfiere a su bolsa.
-- **RN-58 [PROPUESTO]:** al mover dinero **fuera de una bolsa que tiene una meta activa**, la tool de vista previa advierte el efecto sobre el avance de la meta (por ejemplo, "baja de 36 % a 30 %").
+- **RN-58 [DECIDIDO]:** al mover dinero **fuera de una bolsa que tiene una meta activa**, la tool de vista previa advierte el efecto sobre el avance de la meta (por ejemplo, "baja de 36 % a 30 %"). (Decidida el 2026-11-11, Hito 8.)
 - Motivos permitidos: `cubrir_sobregasto`, `reasignacion`, `cierre_de_mes`, `ajuste`.
 - El motivo de cada transferencia permite analizar patrones (por ejemplo, cuántas veces se cubrió Gustos con Necesidades, lo que indica si los porcentajes están mal calibrados).
 
@@ -441,7 +441,7 @@ su número.
   cambio PATCH.
 - Si una enmienda toca una regla `RN-xx`, se revisan las specs que la citan.
 
-**Versión**: 1.0.3 | **Ratificada**: 2026-11-09 | **Última enmienda**: 2026-11-11
+**Versión**: 1.0.4 | **Ratificada**: 2026-11-09 | **Última enmienda**: 2026-11-11
 
 ---
 
@@ -453,3 +453,4 @@ su número.
 | 1.0.1 | 2026-11-10 | PATCH aprobado por el propietario: la decisión #12 (detalles de monedas) pasa a resuelta (sección 14.1.1) y RN-56 y RN-57 pasan de [PROPUESTO] a [DECIDIDO] (RN-55 ya lo estaba). No cambia el significado de ninguna regla. |
 | 1.0.2 | 2026-11-10 | PATCH aprobado por el propietario: se resuelve el punto (d) de la decisión #12 (sección 14.1.1): un pago de gasto fijo en USD exige el tipo de cambio indicado en ese pago; si falta, error, sin asumirlo ni reutilizar el último. No cambia el significado de ninguna regla. |
 | 1.0.3 | 2026-11-11 | PATCH aprobado por el propietario: la decisión #11 (metas por bolsa) pasa a resuelta (sección 14.1.2) y RN-22 pasa de [PROPUESTO] a [DECIDIDO]. RN-24, RN-28 y RN-29 siguen [PROPUESTO]. No cambia el significado de ninguna regla. |
+| 1.0.4 | 2026-11-11 | PATCH aprobado por el propietario: RN-58 (aviso del efecto de una transferencia sobre el avance de la meta) pasa de [PROPUESTO] a [DECIDIDO]. No cambia el significado de ninguna regla. |

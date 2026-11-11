@@ -21,6 +21,7 @@ from puro_pockets.mcp.extras_tools import register_extras_tools
 from puro_pockets.mcp.ledger_tools import register_ledger_tools
 from puro_pockets.mcp.login import build_login_handler
 from puro_pockets.mcp.pockets_tools import register_pockets_tools
+from puro_pockets.mcp.transfers_tools import register_transfers_tools
 from puro_pockets.services.budget import BudgetService
 from puro_pockets.services.health import HealthService
 from puro_pockets.services.ledger import LedgerService
@@ -62,8 +63,10 @@ Reglas para todas las tools:
   siempre el tipo de cambio al propietario: nunca lo asumas ni reutilices uno anterior.
 - Cada escritura lleva un operation_id nuevo; repítelo solo para reintentar exactamente la misma
   llamada.
-- Los movimientos se identifican como I-n (ingresos), G-n (gastos) y F-n (gastos fijos). Nada se
-  borra: un error se corrige con void_transaction y un registro nuevo.
+- Los movimientos se identifican como I-n (ingresos), G-n (gastos), F-n (gastos fijos) y T-n
+  (transferencias). Nada se borra: un ingreso o gasto mal registrado se corrige con
+  void_transaction y un registro nuevo; una transferencia no se anula: se corrige con otra en
+  sentido contrario.
 
 Ingreso extra (todo lo que no es el salario):
 1. register_extra_income: queda pendiente y "sin asignar".
@@ -82,7 +85,17 @@ pagar en el mes; el pago es add_expense con recurring.
 Bolsas nuevas o archivadas: preview_rebalance muestra cómo quedarían los porcentajes; create_bolsa y
 archive_bolsa siguen el mismo patrón que confirm_allocation (vista previa con preview_token,
 explicación breve, aprobación explícita del propietario, confirm=true). Una bolsa solo se archiva
-con saldo cero.
+con saldo (o disponible del mes) cero: si tiene dinero, primero muévelo con una transferencia
+(motivo reasignacion).
+
+Transferencias entre bolsas (siempre en colones y con la fecha de hoy):
+1. preview_transfer: cómo quedan ambas bolsas y el efecto en el avance de sus metas.
+2. Explica en pocas palabras el movimiento y el efecto en la meta.
+3. Espera la aprobación explícita del propietario. Una respuesta ambigua no es aprobación.
+4. Solo entonces transfer_between_bolsas con confirm=true, el preview_token y un operation_id.
+Tras un gasto que deja una bolsa en negativo (overspent=true), propón cubrirlo con una
+transferencia desde una de las bolsas que lista la advertencia (motivo cubrir_sobregasto), con el
+mismo flujo. No se mueve más de lo disponible en el origen.
 
 Metas: una meta no tiene dinero propio; su avance es el saldo de su bolsa acumulable. Con
 get_goal_progress puedes estimar una fecha (si projectable es true) y sugerir qué hacer con un
@@ -163,6 +176,8 @@ def build_server(
         register_extras_tools(server, ledger)
         # Bolsas flexibles y metas (Hito 7), también detrás del token
         register_pockets_tools(server, ledger)
+        # Transferencias entre bolsas (Hito 8), también detrás del token
+        register_transfers_tools(server, ledger)
 
     return server
 

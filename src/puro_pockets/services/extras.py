@@ -16,7 +16,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from puro_pockets.domain.allocation import allocate_by_percentages, pick_source_month
-from puro_pockets.domain.balances import IncomeKind, accumulated_balance, assigned, spent
+from puro_pockets.domain.balances import IncomeKind
 from puro_pockets.domain.errors import (
     DomainError,
     ExtraAlreadyDistributed,
@@ -37,7 +37,7 @@ from puro_pockets.domain.ledger import (
 )
 from puro_pockets.domain.money import Currency, convert, format_original, format_rate
 from puro_pockets.domain.months import Month
-from puro_pockets.domain.pockets import Behavior, is_plain_int, normalize_name, ordered_active
+from puro_pockets.domain.pockets import is_plain_int, normalize_name, ordered_active
 from puro_pockets.domain.recurring import PendingRecurring
 from puro_pockets.services.budget import AllocationLine
 from puro_pockets.services.ledger_core import (
@@ -86,9 +86,18 @@ class ContextPocket(BaseModel):
     budget: int = Field(
         description="Asignado en el mes (presupuesto original; sin extras pendientes)."
     )
+    transfers_in: int = Field(default=0, description="Transferencias recibidas en el mes.")
+    transfers_out: int = Field(default=0, description="Transferencias enviadas en el mes.")
+    adjusted_budget: int = Field(
+        default=0, description="Presupuesto ajustado (9.1): asignado + recibidas − enviadas."
+    )
     spent: int = Field(description="Gastado en el mes.")
-    available: int | None = Field(description="Consumo: disponible del mes (11.1).")
-    balance: int | None = Field(description="Acumulable: saldo actual (11.2).")
+    available: int | None = Field(
+        description="Consumo: disponible del mes (11.1) = ajustado − gastado."
+    )
+    balance: int | None = Field(
+        description="Acumulable: saldo actual (11.2), con las transferencias incluidas."
+    )
     negative: bool
 
 
@@ -266,30 +275,26 @@ class ExtrasMixin(LedgerCore):
         names = {p.id: p.name for p in all_pockets}
         source = pick_source_month(month, self._store.allocation_months(month))
         rows = self._store.allocation_rows(source) if source else {}
-        entries = self._store.allocation_entries()
-        expenses = self._store.expense_entries()
+        data = self._data()
         pockets = []
         for pocket in ordered_active(all_pockets):
-            budget = assigned(entries, pocket.id, month)
-            used = spent(expenses, pocket.id, month)
-            if pocket.behavior is Behavior.CONSUMO:
-                available, balance, negative = budget - used, None, budget - used < 0
-            else:
-                balance = accumulated_balance(entries, pocket.id, expenses)
-                available, negative = None, balance < 0
+            figures = data.figures(pocket, month)  # la misma función que get_bolsa_status
             pockets.append(
                 ContextPocket(
                     pocket=pocket.name,
                     behavior=pocket.behavior.value,
                     percentage=rows.get(pocket.id, 0) if source else None,
-                    budget=budget,
-                    spent=used,
-                    available=available,
-                    balance=balance,
-                    negative=negative,
+                    budget=figures.assigned,
+                    transfers_in=figures.transfers_in,
+                    transfers_out=figures.transfers_out,
+                    adjusted_budget=figures.adjusted_budget,
+                    spent=figures.spent,
+                    available=figures.available,
+                    balance=figures.balance,
+                    negative=figures.negative,
                 )
             )
-        balance_of = balance_function(entries, expenses)
+        balance_of = balance_function(data.entries, data.expenses, data.transfers)
         recent = [
             RecentExtra(
                 budget_month=str(past.budget_month),

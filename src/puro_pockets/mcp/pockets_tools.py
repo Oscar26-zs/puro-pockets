@@ -167,8 +167,9 @@ def register_pockets_tools(server: MCPServer, service: LedgerService) -> None:
         """Archiva una bolsa (nunca se borra, RN-16) solo si su saldo (acumulable) o disponible
         del mes (consumo) es cero (RN-18). Redistribuye su porcentaje en el mes actual y en los
         meses futuros con porcentajes propios (RN-17); sus metas se archivan con ella. Una bolsa
-        archivada no recibe gastos ni repartos y no se reactiva. Para vaciarla hará falta una
-        transferencia (Hito 8)
+        archivada no recibe gastos, repartos ni transferencias y no se reactiva. Si tiene dinero,
+        primero muévelo a otra bolsa con preview_transfer y transfer_between_bolsas (motivo
+        reasignacion); si está en negativo, cúbrela antes con una transferencia hacia ella.
 
         Flujo: pide la vista previa (confirm=false), explica el cambio en pocas palabras, espera la
         aprobación EXPLÍCITA del propietario y solo entonces repite con confirm=true, el

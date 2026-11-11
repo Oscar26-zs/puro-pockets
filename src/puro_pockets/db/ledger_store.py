@@ -1,7 +1,11 @@
 """Almacén SQL de movimientos: salario, gastos, anulación, categorías y clave de operación (Hito 5);
 extras pendientes y su reparto, gastos fijos y sus pagos (Hito 6); bolsas nuevas y archivadas con su
-reajuste de porcentajes, y metas (Hito 7). Toda operación que sube un saldo evalúa las metas en su
-transacción (`_settle_goals`, RN-24).
+reajuste de porcentajes, y metas (Hito 7); transferencias entre bolsas (Hito 8). Toda operación que
+sube un saldo evalúa las metas en su transacción (`_settle_goals`, RN-24).
+
+Las transferencias y el archivado bloquean las bolsas que tocan (`SELECT … FOR UPDATE`, en orden de
+id) y vuelven a validar dentro de la transacción: dos transferencias simultáneas no sobregiran el
+origen (RN-42) y una bolsa no queda archivada con dinero (RN-18).
 
 Cada escritura guarda el cambio y su clave de operación en una sola transacción (principio 3.6). Si
 otra llamada simultánea guardó la misma clave primero, la PK de `idempotency_keys` lo detecta: se
@@ -19,6 +23,7 @@ from sqlalchemy.exc import IntegrityError
 
 from puro_pockets.db.budget_store import (
     LIVE_EXPENSE,
+    LIVE_INCOME,
     SqlBudgetStore,
     budget_month_allocations,
     categories,
@@ -32,8 +37,9 @@ from puro_pockets.db.budget_store import (
     recurring_expense_amounts,
     recurring_expenses,
     savings_goals,
+    transfers,
 )
-from puro_pockets.domain.balances import IncomeKind
+from puro_pockets.domain.balances import AllocationEntry, ExpenseEntry, IncomeKind
 from puro_pockets.domain.categories import Category
 from puro_pockets.domain.errors import (
     AlreadyVoided,
@@ -50,21 +56,26 @@ from puro_pockets.domain.goals import Goal, GoalStatus
 from puro_pockets.domain.ledger import MovementKind, MovementRef
 from puro_pockets.domain.money import Currency
 from puro_pockets.domain.months import Month
+from puro_pockets.domain.pockets import Behavior, Pocket
 from puro_pockets.domain.recurring import RecurringRef, RecurringTemplate
+from puro_pockets.domain.transfers import TransferReason
 from puro_pockets.services.budget import AllocationLine
 from puro_pockets.services.records import (
     ExpenseRow,
     GoalChange,
     IncomeRow,
+    LedgerSnapshot,
     NewExpense,
     NewGoal,
     NewIncome,
     NewPocket,
     NewRecurring,
+    NewTransfer,
     Operation,
     OperationTaken,
     RecurringChange,
     StoredOperation,
+    TransferRow,
 )
 
 OPERATION_PK = "idempotency_keys_pkey"
@@ -610,8 +621,12 @@ class SqlLedgerStore(SqlBudgetStore):
         months: dict[Month, dict[int, int]],
         operation: Operation,
         respond: Callable[[], dict],
+        verify: Callable[[LedgerSnapshot], None] | None = None,
     ) -> dict:
         def work(conn: Connection) -> dict:
+            snapshot = self._lock_and_read(conn, [pocket_id])
+            if verify is not None:
+                verify(snapshot)  # RN-18 con lo que hay ahora, con la bolsa bloqueada
             conn.execute(
                 update(pockets)
                 .where((pockets.c.id == pocket_id) & pockets.c.active)
@@ -688,3 +703,95 @@ class SqlLedgerStore(SqlBudgetStore):
             return respond()
 
         return self._goal_write(operation, work)
+
+    # --- Transferencias (Hito 8) ---
+
+    def _lock_and_read(self, conn: Connection, pocket_ids: Sequence[int]) -> LedgerSnapshot:
+        """Bloquea las bolsas en orden de id (sin interbloqueos entre dos transferencias cruzadas) y
+        lee, ya dentro de la transacción, sus repartos, gastos y transferencias vigentes."""
+        ids = sorted(set(pocket_ids))
+        rows = conn.execute(
+            select(pockets.c.id, pockets.c.name, pockets.c.behavior, pockets.c.active)
+            .where(pockets.c.id.in_(ids))
+            .order_by(pockets.c.id)
+            .with_for_update()
+        ).all()
+        locked = {r.id: Pocket(r.id, r.name, Behavior(r.behavior), r.active) for r in rows}
+        entries = [
+            AllocationEntry(r.pocket_id, Month.parse(r.budget_month), r.amount, IncomeKind(r.kind))
+            for r in conn.execute(
+                select(
+                    income_allocations.c.pocket_id,
+                    incomes.c.budget_month,
+                    income_allocations.c.amount,
+                    incomes.c.kind,
+                )
+                .select_from(
+                    income_allocations.join(incomes, incomes.c.id == income_allocations.c.income_id)
+                )
+                .where(LIVE_INCOME & income_allocations.c.pocket_id.in_(ids))
+            ).all()
+        ]
+        spent = [
+            ExpenseEntry(r.pocket_id, Month.parse(r.month), r.amount)
+            for r in conn.execute(
+                select(expenses.c.pocket_id, expenses.c.month, expenses.c.amount).where(
+                    LIVE_EXPENSE & expenses.c.pocket_id.in_(ids)
+                )
+            ).all()
+        ]
+        return LedgerSnapshot(locked, entries, spent, self._read_transfers(conn, ids))
+
+    def record_transfer(
+        self,
+        new: NewTransfer,
+        operation: Operation,
+        verify: Callable[[LedgerSnapshot], Callable[[int], dict]],
+        on: date,
+    ) -> dict:
+        def work(conn: Connection) -> dict:
+            snapshot = self._lock_and_read(conn, [new.from_pocket_id, new.to_pocket_id])
+            respond = verify(snapshot)  # RN-41/RN-42 otra vez, con las bolsas bloqueadas
+            transfer_id = conn.execute(
+                insert(transfers)
+                .values(
+                    transfer_date=new.transfer_date,
+                    month=str(new.month),
+                    from_pocket_id=new.from_pocket_id,
+                    to_pocket_id=new.to_pocket_id,
+                    amount=new.amount,
+                    reason=new.reason.value,
+                    note=new.note,
+                )
+                .returning(transfers.c.id)
+            ).scalar_one()
+            self._settle_goals(conn, on)  # el destino puede alcanzar su meta (RN-24)
+            return respond(transfer_id)
+
+        return self._write(operation, work)
+
+    def list_transfers(
+        self, month: Month | None, pocket_id: int | None, limit: int
+    ) -> list[TransferRow]:
+        query = select(transfers)
+        if month is not None:
+            query = query.where(transfers.c.month == str(month))
+        if pocket_id is not None:
+            query = query.where(
+                (transfers.c.from_pocket_id == pocket_id) | (transfers.c.to_pocket_id == pocket_id)
+            )
+        query = query.order_by(transfers.c.transfer_date.desc(), transfers.c.id.desc()).limit(limit)
+        with self._engine.connect() as conn:
+            return [
+                TransferRow(
+                    r.id,
+                    r.transfer_date,
+                    Month.parse(r.month),
+                    r.from_pocket_id,
+                    r.to_pocket_id,
+                    r.amount,
+                    TransferReason(r.reason),
+                    r.note,
+                )
+                for r in conn.execute(query).all()
+            ]

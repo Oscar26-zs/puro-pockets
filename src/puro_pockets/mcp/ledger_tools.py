@@ -119,7 +119,11 @@ def register_ledger_tools(server: MCPServer, service: LedgerService) -> None:
         """Registra un gasto contra cualquier bolsa (RN-31 a RN-34), en el mes de su fecha.
 
         Si deja la bolsa en negativo, se guarda igual y la respuesta advierte con las bolsas que
-        tienen saldo disponible (RN-37, RN-38). En USD exige el tipo de cambio (RN-57).
+        tienen saldo o disponible del mes (transferencias incluidas) (RN-37, RN-38). Entonces
+        propón cubrirlo con una transferencia: preview_transfer (motivo cubrir_sobregasto) desde
+        una de esas bolsas, con una explicación breve; espera la aprobación EXPLÍCITA del
+        propietario y solo entonces transfer_between_bolsas con confirm=true. En USD exige el tipo
+        de cambio (RN-57).
 
         El monto es obligatorio salvo al pagar un gasto fijo (recurring). Un fijo admite un solo
         pago vigente por mes (el mes de la fecha del pago); un fijo en USD exige el tipo de cambio
@@ -153,7 +157,8 @@ def register_ledger_tools(server: MCPServer, service: LedgerService) -> None:
     ) -> VoidResult:
         """Anula un ingreso o gasto con motivo, sin borrarlo (RN-53): deja de contar en los cálculos
         y sigue en el historial. Anular un salario revierte su reparto y puede dejar bolsas en
-        negativo (RN-59). Anular el saldo inicial permite cargar uno nuevo."""
+        negativo (RN-59). Anular el saldo inicial permite cargar uno nuevo. Las transferencias (T-n)
+        no se anulan: se corrigen con otra transferencia en sentido contrario (RN-43)."""
         return await service.void_transaction(reference, reason, operation_id, confirm)
 
     @server.tool()
@@ -162,9 +167,10 @@ def register_ledger_tools(server: MCPServer, service: LedgerService) -> None:
         pocket: str = Field(description="Nombre de la bolsa (sin distinguir mayúsculas)."),
         month: str | None = Field(default=None, description=MONTH_DESCRIPTION),
     ) -> BolsaStatus:
-        """Estado de una bolsa en un mes: asignado, transferencias, presupuesto ajustado, gastado y
-        disponible con % usado (consumo, 11.1) o saldo (acumulable, 11.2) y, si tiene, el avance de
-        su meta activa."""
+        """Estado de una bolsa en un mes: presupuesto original (asignado), transferencias recibidas
+        y enviadas, presupuesto ajustado (9.1), gastado y disponible con % usado sobre el ajustado
+        y sobre el original (consumo, 11.1) o saldo con las transferencias incluidas (acumulable,
+        11.2) y, si tiene, el avance de su meta activa."""
         return await service.get_bolsa_status(pocket, month)
 
     @server.tool()
@@ -172,8 +178,9 @@ def register_ledger_tools(server: MCPServer, service: LedgerService) -> None:
     async def get_summary(
         month: str | None = Field(default=None, description=MONTH_DESCRIPTION),
     ) -> SummaryResult:
-        """Resumen del mes: ingresos (sin el saldo inicial), total gastado y estado de cada bolsa,
-        con las bolsas en negativo marcadas."""
+        """Resumen del mes: ingresos (sin el saldo inicial), total gastado y estado de cada bolsa
+        (presupuesto original, transferencias, ajustado, gastado, disponible o saldo), con las
+        bolsas en negativo marcadas."""
         return await service.get_summary(month)
 
     @server.tool()
@@ -194,15 +201,19 @@ def register_ledger_tools(server: MCPServer, service: LedgerService) -> None:
             description="AAAA-MM (opcional). Gastos por mes calendario; ingresos por mes "
             "presupuestario.",
         ),
-        type: Literal["gasto", "ingreso"] | None = Field(  # noqa: A002 - nombre del contrato
-            default=None, description="gasto o ingreso (opcional)."
+        type: Literal["gasto", "ingreso", "transferencia"] | None = Field(  # noqa: A002
+            default=None, description="gasto, ingreso o transferencia (opcional)."
         ),
-        pocket: str | None = Field(default=None, description="Bolsa (opcional; solo gastos)."),
+        pocket: str | None = Field(
+            default=None,
+            description="Bolsa (opcional): sus gastos y las transferencias que la tienen como "
+            "origen o destino.",
+        ),
         include_voided: bool = Field(default=True, description="Incluir los anulados."),
         limit: ListLimit = None,
     ) -> TransactionsResult:
-        """Lista movimientos, los más recientes primero, con su referencia (I-n, G-n). Los anulados
-        aparecen marcados con su motivo."""
+        """Lista movimientos, los más recientes primero, con su referencia (I-n, G-n, T-n). Los
+        anulados aparecen marcados con su motivo; las transferencias nunca se anulan."""
         return await service.list_transactions(month, type, pocket, include_voided, limit)
 
     @server.tool()

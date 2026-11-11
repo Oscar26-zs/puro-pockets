@@ -6,7 +6,10 @@ USD), anulaciones (incluido el saldo inicial y su nueva carga). Desde el Hito 6:
 (fuera del invariante), repartidos (dentro) y anulados (revierten), y gastos fijos con pagos
 (algunos anulados y vueltos a pagar). Desde el Hito 7, operaciones estructurales
 (`apply_structure`): bolsas nuevas con las tres estrategias, metas creadas y cambiadas, y archivado
-de bolsas con saldo cero; ninguna mueve un saldo. Los Hitos 8 y 9 agregan transferencias y cierres.
+de bolsas con saldo cero; ninguna mueve un saldo. Desde el Hito 8, transferencias
+(`apply_transfers`): válidas con los tres motivos, rechazadas por exceder lo disponible o salir de
+una bolsa en negativo, y bolsas vaciadas (o cubiertas) con una transferencia y luego archivadas. El
+Hito 9 agregará cierres.
 """
 
 from __future__ import annotations
@@ -15,6 +18,12 @@ import random
 from dataclasses import dataclass
 from datetime import date, timedelta
 
+from puro_pockets.domain.balances import pocket_figures
+from puro_pockets.domain.errors import (
+    DomainError,
+    TransferExceedsAvailable,
+    TransferFromNegative,
+)
 from puro_pockets.domain.money import RateRange
 from puro_pockets.domain.months import Month
 from puro_pockets.domain.pockets import Behavior
@@ -90,6 +99,7 @@ class SyntheticDataset:
     recurring: tuple[SyntheticRecurring, ...] = ()
     payments: tuple[SyntheticPayment, ...] = ()
     structure_seed: int = 0  # semilla de las operaciones estructurales (Hito 7)
+    transfer_seed: int = 0  # semilla de las transferencias (Hito 8)
 
 
 def _percentages(rng: random.Random, count: int) -> tuple[int, ...]:
@@ -191,6 +201,7 @@ def generate(seed: int) -> SyntheticDataset:
         recurring,
         tuple(payments),
         rng.randrange(2**31),
+        rng.randrange(2**31),
     )
 
 
@@ -202,6 +213,7 @@ async def apply(store, dataset: SyntheticDataset) -> None:
     """Registra el conjunto con los servicios reales (las mismas reglas que usan las tools)."""
     await apply_money(store, dataset)
     await apply_structure(store, dataset)
+    await apply_transfers(store, dataset)
 
 
 async def apply_money(store, dataset: SyntheticDataset) -> None:
@@ -366,3 +378,100 @@ async def apply_structure(store, dataset: SyntheticDataset) -> None:
             operation_id=f"{prefix}-arch-{n}",
             preview_token=preview.preview_token,
         )
+
+
+REASONS = ("cubrir_sobregasto", "reasignacion", "ajuste")
+
+
+def _available(store, pocket) -> int:
+    """Lo disponible para mover (RN-42) con la función oficial, en el mes de hoy."""
+    figures = pocket_figures(
+        pocket,
+        Month.of(TODAY),
+        store.allocation_entries(),
+        store.expense_entries(),
+        store.transfer_entries(),
+    )
+    return figures.amount
+
+
+async def _move(ledger, source, target, amount, reason, op) -> None:
+    preview = await ledger.preview_transfer(source, target, amount, reason)
+    await ledger.transfer_between_bolsas(
+        source,
+        target,
+        amount,
+        reason,
+        confirm=True,
+        operation_id=op,
+        preview_token=preview.preview_token,
+    )
+
+
+async def apply_transfers(store, dataset: SyntheticDataset) -> dict[str, int]:
+    """Hito 8: transferencias válidas y rechazadas, y bolsas vaciadas o cubiertas y archivadas.
+    Devuelve contadores para que las pruebas verifiquen que de verdad se ejercitó cada caso."""
+    rng = random.Random(dataset.transfer_seed)
+    ledger = LedgerService(store, today=lambda: TODAY, rate_range=RATES)
+    prefix = f"syn-{dataset.seed}-h8"
+    counts = {"saved": 0, "rejected": 0, "archived": 0}
+    for n in range(rng.randint(0, 6)):
+        active = [p for p in store.list_pockets() if p.active]
+        if len(active) < 2:
+            break
+        source, target = rng.sample(active, 2)
+        have = _available(store, source)
+        reason = rng.choice(REASONS)
+        if have <= 0 or rng.random() < 0.2:
+            # Debe rechazarse: más de lo disponible o desde una bolsa en negativo (RN-42)
+            try:
+                await ledger.preview_transfer(source.name, target.name, max(have, 0) + 1, reason)
+            except (TransferExceedsAvailable, TransferFromNegative):
+                counts["rejected"] += 1
+                continue
+            raise AssertionError(f"Debió rechazarse: semilla={dataset.seed}")
+        amount = rng.randint(1, have)
+        await _move(ledger, source.name, target.name, amount, reason, f"{prefix}-t-{n}")
+        counts["saved"] += 1
+    if rng.random() < 0.5:
+        active = [p for p in store.list_pockets() if p.active]
+        if len(active) >= 2:
+            pocket = rng.choice(active)
+            others = [p for p in active if p.id != pocket.id]
+            have = _available(store, pocket)
+            if have > 0:  # vaciar con reasignacion (RN-18)
+                await _move(
+                    ledger,
+                    pocket.name,
+                    rng.choice(others).name,
+                    have,
+                    "reasignacion",
+                    f"{prefix}-vaciar",
+                )
+            elif have < 0:  # cubrirla desde una bolsa que alcance
+                donors = [p for p in others if _available(store, p) >= -have]
+                if not donors:
+                    return counts
+                await _move(
+                    ledger,
+                    rng.choice(donors).name,
+                    pocket.name,
+                    -have,
+                    "cubrir_sobregasto",
+                    f"{prefix}-cubrir",
+                )
+            args = {"strategy": "proporcional"}
+            try:
+                preview = await ledger.archive_bolsa(pocket.name, **args)
+            except DomainError:  # las demás tienen 0 %: una sola bolsa recibe el porcentaje
+                args = {"strategy": "desde_una_bolsa", "to_pocket": rng.choice(others).name}
+                preview = await ledger.archive_bolsa(pocket.name, **args)
+            await ledger.archive_bolsa(
+                pocket.name,
+                confirm=True,
+                operation_id=f"{prefix}-arch",
+                preview_token=preview.preview_token,
+                **args,
+            )
+            counts["archived"] += 1
+    return counts

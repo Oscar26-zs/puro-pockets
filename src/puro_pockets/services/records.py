@@ -1,4 +1,4 @@
-"""Registros que intercambian el servicio de movimientos y su almacén (Hitos 5 y 6).
+"""Registros que intercambian el servicio de movimientos y su almacén (Hitos 5 a 8).
 
 `services/ledger.py` los reexporta, así que los almacenes y las pruebas pueden importarlos desde
 cualquiera de los dos módulos.
@@ -11,14 +11,20 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Protocol
 
-from puro_pockets.domain.balances import IncomeKind
+from puro_pockets.domain.balances import (
+    AllocationEntry,
+    ExpenseEntry,
+    IncomeKind,
+    TransferEntry,
+)
 from puro_pockets.domain.categories import Category
 from puro_pockets.domain.goals import Goal, GoalStatus
 from puro_pockets.domain.ledger import MovementRef
 from puro_pockets.domain.money import Converted, Currency
 from puro_pockets.domain.months import Month
-from puro_pockets.domain.pockets import Behavior
+from puro_pockets.domain.pockets import Behavior, Pocket
 from puro_pockets.domain.recurring import RecurringTemplate
+from puro_pockets.domain.transfers import TransferReason
 from puro_pockets.services.budget import AllocationLine, BudgetStore
 
 
@@ -141,6 +147,42 @@ class GoalChange:
     target_date: date | None = None
     clear_target_date: bool = False
     status: GoalStatus | None = None
+
+
+@dataclass(frozen=True)
+class NewTransfer:
+    """Transferencia a guardar (RN-40): siempre en colones, con la fecha de hoy."""
+
+    transfer_date: date
+    month: Month
+    from_pocket_id: int
+    to_pocket_id: int
+    amount: int
+    reason: TransferReason
+    note: str | None
+
+
+@dataclass(frozen=True)
+class TransferRow:
+    id: int
+    transfer_date: date
+    month: Month
+    from_pocket_id: int
+    to_pocket_id: int
+    amount: int
+    reason: TransferReason
+    note: str | None
+
+
+@dataclass(frozen=True)
+class LedgerSnapshot:
+    """Lo que el almacén lee dentro de una transacción, con las bolsas bloqueadas, para volver a
+    validar con las mismas funciones de `domain/` (RN-18, RN-42)."""
+
+    pockets: dict[int, Pocket]
+    entries: list[AllocationEntry]
+    expenses: list[ExpenseEntry]
+    transfers: list[TransferEntry]
 
 
 class OperationTaken(Exception):  # noqa: N818 - señal interna, no un error de negocio
@@ -280,9 +322,12 @@ class LedgerStore(BudgetStore, Protocol):
         months: dict[Month, dict[int, int]],
         operation: Operation,
         respond: Callable[[], dict],
+        verify: Callable[[LedgerSnapshot], None] | None = None,
     ) -> dict:
         """Archiva la bolsa (RN-16), archiva sus metas y reescribe los porcentajes de cada mes
-        indicado sin ella (RN-17), todo en una transacción."""
+        indicado sin ella (RN-17), todo en una transacción. Bloquea la bolsa y llama a `verify` con
+        lo leído dentro de la transacción (saldo cero, RN-18), así una transferencia simultánea
+        hacia ella no la deja archivada con dinero."""
         ...
 
     def list_goals(self) -> list[Goal]: ...
@@ -296,3 +341,25 @@ class LedgerStore(BudgetStore, Protocol):
     def update_goal(
         self, change: GoalChange, operation: Operation, respond: Callable[[], dict], on: date
     ) -> dict: ...
+
+    # --- Transferencias (Hito 8) ---
+
+    def list_transfers(
+        self, month: Month | None, pocket_id: int | None, limit: int
+    ) -> list[TransferRow]:
+        """Las más recientes primero; con bolsa, las que la tienen como origen o destino."""
+        ...
+
+    def record_transfer(
+        self,
+        new: NewTransfer,
+        operation: Operation,
+        verify: Callable[[LedgerSnapshot], Callable[[int], dict]],
+        on: date,
+    ) -> dict:
+        """Guarda una transferencia de forma atómica (RN-40). En una transacción: bloquea las dos
+        bolsas en orden de id (`SELECT … FOR UPDATE`), lee de nuevo sus movimientos y llama a
+        `verify`, que vuelve a validar RN-41/RN-42 (lanza `DomainError` si ya no se cumple) y
+        devuelve cómo armar la respuesta; inserta la fila, evalúa las metas (RN-24) con la fecha
+        `on` y guarda la clave de operación."""
+        ...

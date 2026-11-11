@@ -97,7 +97,8 @@ def _blank(value: object) -> bool:
 
 class GoalsMixin(LedgerCore):
     def _balances(self):
-        return balance_function(self._store.allocation_entries(), self._store.expense_entries())
+        data = self._data()
+        return balance_function(data.entries, data.expenses, data.transfers)
 
     def _goal_result(self, goal: Goal, pocket_name: str, balance: int, saved: bool, note=None):
         figures = progress(goal, balance)
@@ -289,15 +290,15 @@ class GoalsMixin(LedgerCore):
             chosen = sorted(
                 (g for g in goals if g.pocket_id == bag.id), key=lambda g: (order[g.status], -g.id)
             )
-        entries = self._store.allocation_entries()
-        expenses = self._store.expense_entries()
-        balance_of = balance_function(entries, expenses)
+        data = self._data()
+        entries, expenses, transfers = data.entries, data.expenses, data.transfers
+        balance_of = balance_function(entries, expenses, transfers)
         current = Month.of(self._today())
         items = []
         for goal in chosen:
             balance = balance_of(goal.pocket_id)
             figures = progress(goal, balance)
-            change = net_monthly_change(entries, expenses, goal.pocket_id, current)
+            change = net_monthly_change(entries, expenses, goal.pocket_id, current, transfers)
             items.append(
                 GoalProgressItem(
                     reference=goal.reference,

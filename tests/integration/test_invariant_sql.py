@@ -2,7 +2,8 @@
 
 El lado izquierdo se consulta directamente sobre `incomes` y `expenses` (sumas en SQL); el derecho
 sale de los saldos que calcula la aplicación a partir de `income_allocations` y de cada gasto.
-Cubre salarios en CRC y USD, gastos, sobregastos y anulaciones.
+Cubre salarios en CRC y USD, gastos, sobregastos y anulaciones, extras, gastos fijos, bolsas
+nuevas, metas, archivados y transferencias (Hito 8).
 """
 
 import pytest
@@ -31,5 +32,6 @@ async def test_invariante_con_conjuntos_sinteticos_en_postgres(budget_engine, _s
             store.list_pockets(),
             store.allocation_entries(),
             store.expense_entries(),
+            store.transfer_entries(),
         )
         assert gap == 0, f"El invariante no cuadra: semilla={dataset.seed} diferencia={gap}"

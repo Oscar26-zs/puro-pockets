@@ -2,8 +2,10 @@
 
 Gobernanza, regla no negociable 3. Desde el Hito 5 cubre salarios en CRC y USD, gastos, sobregastos
 y anulaciones (incluido el saldo inicial y su nueva carga); desde el Hito 6, extras pendientes
-(fuera), repartidos (dentro) y anulados (revierten), y pagos de gastos fijos. La versión contra
-Postgres está en tests/integration/test_invariant_sql.py.
+(fuera), repartidos (dentro) y anulados (revierten), y pagos de gastos fijos; desde el Hito 7,
+bolsas nuevas, metas y archivados; desde el Hito 8, transferencias (válidas, rechazadas y para
+vaciar una bolsa antes de archivarla). La versión contra Postgres está en
+tests/integration/test_invariant_sql.py.
 """
 
 import pytest
@@ -11,14 +13,23 @@ import pytest
 from puro_pockets.domain.balances import (
     IncomeKind,
     accumulated_balance,
+    assigned,
     consumption_available,
     integrity_gap,
+    pocket_figures,
 )
 from puro_pockets.domain.goals import progress
 from puro_pockets.domain.months import Month
 from puro_pockets.domain.pockets import Behavior, Pocket
 from tests.fakes import InMemoryLedgerStore
-from tests.synthetic import DATASETS, apply, apply_money, apply_structure, datasets
+from tests.synthetic import (
+    DATASETS,
+    apply,
+    apply_money,
+    apply_structure,
+    apply_transfers,
+    datasets,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -37,6 +48,7 @@ def _gap(store, expenses=None):
         store.list_pockets(),
         store.allocation_entries(),
         store.expense_entries() if expenses is None else expenses,
+        store.transfer_entries(),
     )
 
 
@@ -103,15 +115,20 @@ MONTHS = [Month(2026, m) for m in range(6, 13)] + [Month(2027, 1)]
 def _snapshot(store):
     """Saldo de cada acumulable (11.2) y disponible de cada consumo en cada mes (11.1)."""
     entries, expenses = store.allocation_entries(), store.expense_entries()
+    moved = store.transfer_entries()
     result = {}
     for pocket in store.list_pockets():
         if pocket.behavior is Behavior.ACUMULABLE:
-            result[pocket.id] = accumulated_balance(entries, pocket.id, expenses)
+            result[pocket.id] = accumulated_balance(entries, pocket.id, expenses, moved)
         else:
             result[pocket.id] = tuple(
-                consumption_available(entries, pocket.id, m, expenses) for m in MONTHS
+                consumption_available(entries, pocket.id, m, expenses, moved) for m in MONTHS
             )
     return result
+
+
+def _total(snapshot) -> int:
+    return sum(sum(v) if isinstance(v, tuple) else v for v in snapshot.values())
 
 
 async def test_estructura_no_mueve_saldos_y_el_avance_es_el_saldo():
@@ -146,8 +163,6 @@ async def test_estructura_no_mueve_saldos_y_el_avance_es_el_saldo():
 
 async def test_cambiar_porcentajes_no_altera_meses_pasados():
     """Lo asignado en cada mes pasado queda igual tras crear y archivar bolsas (RN-02)."""
-    from puro_pockets.domain.balances import assigned
-
     for dataset in datasets(60):
         pockets = [Pocket(i + 1, n, b) for i, (n, b) in enumerate(dataset.pockets)]
         store = InMemoryLedgerStore(pockets)
@@ -162,3 +177,42 @@ async def test_cambiar_porcentajes_no_altera_meses_pasados():
         assert {
             (p.id, m): assigned(store.allocation_entries(), p.id, m) for p in pockets for m in past
         } == figures, f"semilla={dataset.seed}"
+
+
+async def test_transferencias_no_crean_ni_destruyen_dinero():
+    """Hito 8 (11.4, 9.1): con 200 conjuntos que mezclan ingresos, gastos, anulaciones, metas y
+    transferencias, la suma de saldos y disponibles no cambia al transferir, el invariante cuadra y
+    el presupuesto ajustado de cada bolsa de consumo es asignado + recibidas − enviadas."""
+    saved = rejected = archived = 0
+    for dataset in datasets():
+        pockets = [Pocket(i + 1, n, b) for i, (n, b) in enumerate(dataset.pockets)]
+        store = InMemoryLedgerStore(pockets)
+        await apply_money(store, dataset)
+        await apply_structure(store, dataset)
+        before = _total(_snapshot(store))
+        counts = await apply_transfers(store, dataset)
+        message = f"semilla={dataset.seed}"
+        assert _total(_snapshot(store)) == before, message
+        assert _gap(store) == 0, message
+        entries, expenses = store.allocation_entries(), store.expense_entries()
+        moved = store.transfer_entries()
+        for pocket in store.list_pockets():
+            if pocket.behavior is Behavior.ACUMULABLE:
+                continue
+            for month in MONTHS:
+                f = pocket_figures(pocket, month, entries, expenses, moved)
+                incoming = sum(
+                    t.amount for t in moved if t.to_pocket_id == pocket.id and t.month == month
+                )
+                outgoing = sum(
+                    t.amount for t in moved if t.from_pocket_id == pocket.id and t.month == month
+                )
+                assert f.assigned == assigned(entries, pocket.id, month), message
+                assert f.adjusted_budget == f.assigned + incoming - outgoing, message
+        for goal in store.goals:  # el avance sigue siendo el saldo, con transferencias
+            balance = accumulated_balance(entries, goal.pocket_id, expenses, moved)
+            assert progress(goal, balance).balance == balance, message
+        saved += counts["saved"]
+        rejected += counts["rejected"]
+        archived += counts["archived"]
+    assert saved > 200 and rejected > 60 and archived > 40
