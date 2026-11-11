@@ -63,3 +63,35 @@ def find_pocket(pockets: Iterable[Pocket], name: object) -> Pocket:
 
 def is_plain_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+MAX_POCKET_NAME = 40
+MAX_GROUP = 40
+
+
+def validate_pocket_name(value: object) -> str:
+    text = value.strip() if isinstance(value, str) else ""
+    if not 1 <= len(text) <= MAX_POCKET_NAME:
+        raise DomainError(
+            f"El nombre de la bolsa es obligatorio, hasta {MAX_POCKET_NAME} caracteres."
+        )
+    return text
+
+
+def validate_group(value: object) -> str | None:
+    """Grupo opcional, solo para estadísticas (sección 6.1)."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if not isinstance(value, str) or len(value.strip()) > MAX_GROUP:
+        raise DomainError(f"El grupo es texto opcional, hasta {MAX_GROUP} caracteres.")
+    return value.strip()
+
+
+def parse_behavior(value: object) -> Behavior:
+    """RN-10: consumo o acumulable."""
+    if isinstance(value, str):
+        try:
+            return Behavior(value.strip().casefold())
+        except ValueError:
+            pass
+    raise DomainError("El comportamiento debe ser consumo o acumulable.")

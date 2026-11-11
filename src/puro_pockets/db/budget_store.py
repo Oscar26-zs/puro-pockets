@@ -1,4 +1,4 @@
-"""Almacén SQL del presupuesto (SQLAlchemy Core). Tablas de las migraciones 0003 a 0005.
+"""Almacén SQL del presupuesto (SQLAlchemy Core). Tablas de las migraciones 0003 a 0006.
 
 Las lecturas de movimientos ignoran lo anulado (RN-53). Las escrituras del Hito 5 (ingresos base,
 gastos, anulaciones) están en `ledger_store.py`.
@@ -14,6 +14,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     Column,
+    Connection,
     Date,
     DateTime,
     Engine,
@@ -25,12 +26,14 @@ from sqlalchemy import (
     func,
     insert,
     select,
+    update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 
 from puro_pockets.domain.balances import AllocationEntry, ExpenseEntry, IncomeKind
 from puro_pockets.domain.errors import InitialBalanceAlreadyLoaded
+from puro_pockets.domain.goals import Goal, GoalStatus, balance_function, reached
 from puro_pockets.domain.money import Currency
 from puro_pockets.domain.months import Month
 from puro_pockets.domain.pockets import Behavior, Pocket
@@ -47,6 +50,21 @@ pockets = Table(
     Column("group_name", Text),
     Column("surplus_target_pocket_id", BigInteger),
     Column("active", Boolean, nullable=False),
+    Column("archived_at", DateTime(timezone=True)),
+)
+
+savings_goals = Table(
+    "savings_goals",
+    metadata,
+    Column("id", BigInteger, primary_key=True),
+    Column("pocket_id", BigInteger, nullable=False),
+    Column("name", Text, nullable=False),
+    Column("target_amount", BigInteger, nullable=False),
+    Column("target_date", Date),
+    Column("status", Text, nullable=False),
+    Column("achieved_on", Date),
+    Column("created_on", Date, nullable=False),
+    Column("archived_at", DateTime(timezone=True)),
 )
 
 categories = Table(
@@ -240,6 +258,7 @@ class SqlBudgetStore:
                     .returning(incomes.c.id)
                 ).scalar_one()
                 insert_lines(conn, income_id, lines)
+                self._settle_goals(conn, income_date)
         except IntegrityError as exc:
             if constraint_name(exc) == INITIAL_BALANCE_INDEX:
                 raise InitialBalanceAlreadyLoaded() from None
@@ -291,6 +310,67 @@ class SqlBudgetStore:
                     select(func.coalesce(func.sum(expenses.c.amount), 0)).where(LIVE_EXPENSE)
                 ).scalar_one()
             )
+
+    # --- Metas: lectura y evaluación de "lograda" (RN-24), dentro de la transacción ---
+
+    @staticmethod
+    def _read_goals(conn: Connection) -> list[Goal]:
+        rows = conn.execute(select(savings_goals).order_by(savings_goals.c.id)).all()
+        return [
+            Goal(
+                r.id,
+                r.pocket_id,
+                r.name,
+                r.target_amount,
+                r.target_date,
+                GoalStatus(r.status),
+                r.achieved_on,
+                r.created_on,
+                r.archived_at is not None,
+            )
+            for r in rows
+        ]
+
+    def _settle_goals(self, conn: Connection, on: date) -> list[int]:
+        """Pasa a lograda las metas vivas cuyo saldo ya alcanza el objetivo (decide `reached`, con
+        el saldo oficial de 11.2). Se llama en la transacción de cada operación que sube un saldo.
+        """
+        goals = [g for g in self._read_goals(conn) if g.live]
+        if not goals:
+            return []
+        ids = sorted({g.pocket_id for g in goals})
+        entries = [
+            AllocationEntry(r.pocket_id, Month.parse(r.budget_month), r.amount, IncomeKind(r.kind))
+            for r in conn.execute(
+                select(
+                    income_allocations.c.pocket_id,
+                    incomes.c.budget_month,
+                    income_allocations.c.amount,
+                    incomes.c.kind,
+                )
+                .select_from(
+                    income_allocations.join(incomes, incomes.c.id == income_allocations.c.income_id)
+                )
+                .where(LIVE_INCOME & income_allocations.c.pocket_id.in_(ids))
+            ).all()
+        ]
+        spent = [
+            ExpenseEntry(r.pocket_id, Month.parse(r.month), r.amount)
+            for r in conn.execute(
+                select(expenses.c.pocket_id, expenses.c.month, expenses.c.amount).where(
+                    LIVE_EXPENSE & expenses.c.pocket_id.in_(ids)
+                )
+            ).all()
+        ]
+        done = []
+        for goal_id, day in reached(goals, balance_function(entries, spent), on):
+            conn.execute(
+                update(savings_goals)
+                .where((savings_goals.c.id == goal_id) & (savings_goals.c.status == "activa"))
+                .values(status=GoalStatus.ACHIEVED.value, achieved_on=day)
+            )
+            done.append(goal_id)
+        return done
 
 
 def insert_lines(conn, income_id: int, lines: Sequence[AllocationLine]) -> None:

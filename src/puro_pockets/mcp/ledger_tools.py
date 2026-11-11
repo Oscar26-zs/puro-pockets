@@ -163,7 +163,8 @@ def register_ledger_tools(server: MCPServer, service: LedgerService) -> None:
         month: str | None = Field(default=None, description=MONTH_DESCRIPTION),
     ) -> BolsaStatus:
         """Estado de una bolsa en un mes: asignado, transferencias, presupuesto ajustado, gastado y
-        disponible con % usado (consumo, 11.1) o saldo (acumulable, 11.2)."""
+        disponible con % usado (consumo, 11.1) o saldo (acumulable, 11.2) y, si tiene, el avance de
+        su meta activa."""
         return await service.get_bolsa_status(pocket, month)
 
     @server.tool()

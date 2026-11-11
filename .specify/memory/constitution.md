@@ -1,6 +1,6 @@
 # Constitución de Puro Pockets
 
-**Versión:** 1.0.2
+**Versión:** 1.0.3
 **Ratificada:** 2026-11-09
 **Propietario:** Oscar Zúñiga ("TosTar")
 
@@ -196,7 +196,7 @@ Cada bolsa `consumo` puede tener un destino de sobrante sugerido (por ejemplo, e
 - **RN-19:** una meta tiene **nombre y monto objetivo** (en colones). Ejemplo: viaje de ₡500.000.
 - **RN-20:** la **fecha objetivo es opcional**. No hay fecha obligatoria de cumplimiento.
 - **RN-21:** una meta se asocia a **una bolsa acumulable**. La app rechaza asociarla a una bolsa de consumo (validación en la tool `create_goal`).
-- **RN-22 [PROPUESTO]:** una bolsa tiene **como máximo una meta activa a la vez**. Si se quiere una segunda meta, se crea otra bolsa acumulable para ella. Razón: con dinero compartido, dos metas en la misma bolsa harían ambiguo el avance de cada una. (Pendiente de confirmar: decisión #11.)
+- **RN-22 [DECIDIDO]:** una bolsa tiene **como máximo una meta activa a la vez**. Si se quiere una segunda meta, se crea otra bolsa acumulable para ella. Razón: con dinero compartido, dos metas en la misma bolsa harían ambiguo el avance de cada una. (Decisión #11, resuelta el 2026-11-11.)
 - **RN-23:** el **avance de una meta se calcula** a partir del saldo de su bolsa. No existen aportes ni retiros propios de la meta.
 - **RN-24:** estados de una meta: `activa`, `lograda`, `pausada`.
   - **[PROPUESTO]** Pasa automáticamente a `lograda` cuando el saldo de la bolsa alcanza el monto objetivo, y se registra la fecha del logro. **Permanece `lograda` aunque el saldo baje después** (gastar el dinero del viaje no "deshace" la meta).
@@ -374,11 +374,15 @@ Los ingresos pendientes de repartir quedan fuera de la igualdad y se muestran ap
 |---|---|---|
 | 12 | Monedas, detalles | (a) El tipo de cambio lo indica el propietario en cada movimiento en USD; si falta, la tool devuelve error y **nunca lo asume**. (b) Todo se convierte a colones al registrar (RN-56). (c) Las metas son solo en colones. (d) **Resuelta el 2026-11-10 (Hito 6):** un pago de un gasto fijo en USD exige el tipo de cambio que indique el propietario en ese pago; si falta, la tool devuelve error y **nunca lo asume ni reutiliza en silencio** el último usado. |
 
+### 14.1.2 Resueltas el 2026-11-11
+
+| # | Tema | Decisión |
+|---|---|---|
+| 11 | Metas por bolsa | **Una sola meta activa por bolsa** (RN-22). Para otra meta, se crea otra bolsa acumulable: evita el avance ambiguo al compartir el mismo dinero. |
+
 ### 14.2 Abiertas y aplazadas
 
-| # | Tema | Estado | Pregunta | Recomendación actual |
-|---|---|---|---|---|
-| 11 | Metas por bolsa | **[ABIERTO]** | ¿Una bolsa puede tener varias metas activas o solo una? (RN-22) | Una sola meta activa por bolsa. Para otra meta, se crea otra bolsa acumulable. Evita el avance ambiguo al compartir el mismo dinero. |
+No hay decisiones abiertas ni aplazadas.
 
 
 ---
@@ -437,7 +441,7 @@ su número.
   cambio PATCH.
 - Si una enmienda toca una regla `RN-xx`, se revisan las specs que la citan.
 
-**Versión**: 1.0.2 | **Ratificada**: 2026-11-09 | **Última enmienda**: 2026-11-10
+**Versión**: 1.0.3 | **Ratificada**: 2026-11-09 | **Última enmienda**: 2026-11-11
 
 ---
 
@@ -448,3 +452,4 @@ su número.
 | 1.0.0 | 2026-11-09 | Ratificación inicial, derivada del documento de origen v0.3. |
 | 1.0.1 | 2026-11-10 | PATCH aprobado por el propietario: la decisión #12 (detalles de monedas) pasa a resuelta (sección 14.1.1) y RN-56 y RN-57 pasan de [PROPUESTO] a [DECIDIDO] (RN-55 ya lo estaba). No cambia el significado de ninguna regla. |
 | 1.0.2 | 2026-11-10 | PATCH aprobado por el propietario: se resuelve el punto (d) de la decisión #12 (sección 14.1.1): un pago de gasto fijo en USD exige el tipo de cambio indicado en ese pago; si falta, error, sin asumirlo ni reutilizar el último. No cambia el significado de ninguna regla. |
+| 1.0.3 | 2026-11-11 | PATCH aprobado por el propietario: la decisión #11 (metas por bolsa) pasa a resuelta (sección 14.1.2) y RN-22 pasa de [PROPUESTO] a [DECIDIDO]. RN-24, RN-28 y RN-29 siguen [PROPUESTO]. No cambia el significado de ninguna regla. |

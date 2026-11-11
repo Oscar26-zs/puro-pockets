@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import date
 
 from puro_pockets.domain.balances import AllocationEntry, ExpenseEntry, IncomeKind
 from puro_pockets.domain.categories import Category
@@ -10,12 +11,15 @@ from puro_pockets.domain.errors import (
     AlreadyVoided,
     CategoryAlreadyExists,
     ExtraAlreadyDistributed,
+    GoalAlreadyActive,
     InitialBalanceAlreadyLoaded,
     MovementNotFound,
     MovementVoided,
+    PocketAlreadyExists,
     RecurringAlreadyPaid,
     RecurringNameTaken,
 )
+from puro_pockets.domain.goals import Goal, GoalStatus, balance_function, reached
 from puro_pockets.domain.ledger import MovementKind
 from puro_pockets.domain.money import Converted, Currency
 from puro_pockets.domain.pockets import Behavior, Pocket, normalize_name
@@ -132,6 +136,7 @@ class InMemoryBudgetStore:
         self.categories = []  # Category
         self.operations = {}  # operation_id -> StoredOperation
         self.recurring = []  # RecurringTemplate
+        self.goals = []  # Goal
         self.writes = 0
 
     def list_pockets(self):
@@ -174,6 +179,8 @@ class InMemoryBudgetStore:
             )
         )
         self.lines.extend((income_id, line) for line in lines)
+        if lines:
+            self._settle_goals(income_date)
         return income_id
 
     def record_distributed_income(self, kind, income_date, budget_month, lines):
@@ -201,6 +208,16 @@ class InMemoryBudgetStore:
 
     def expense_total(self):
         return sum(e.amount for e in self.expenses if not e.voided)
+
+    def _settle_goals(self, on):
+        """Como el almacén SQL: `reached` con el saldo oficial (11.2), en la misma operación."""
+        balance_of = balance_function(self.allocation_entries(), self.expense_entries())
+        hits = dict(reached(self.goals, balance_of, on))
+        self.goals = [
+            replace(g, status=GoalStatus.ACHIEVED, achieved_on=hits[g.id]) if g.id in hits else g
+            for g in self.goals
+        ]
+        return list(hits)
 
 
 class InMemoryLedgerStore(InMemoryBudgetStore):
@@ -243,7 +260,7 @@ class InMemoryLedgerStore(InMemoryBudgetStore):
         self._save_operation(operation, response)
         return response
 
-    def distribute_extra(self, income_id, lines, operation, respond):
+    def distribute_extra(self, income_id, lines, operation, respond, on=None):
         if operation.operation_id in self.operations:
             raise OperationTaken()
         index = next(i for i, r in enumerate(self.incomes) if r.id == income_id)
@@ -256,6 +273,7 @@ class InMemoryLedgerStore(InMemoryBudgetStore):
         self.writes += 1
         self.incomes[index] = replace(row, pending=False)
         self.lines.extend((income_id, line) for line in lines)
+        self._settle_goals(on or date.today())
         response = respond()
         self._save_operation(operation, response)
         return response
@@ -291,7 +309,7 @@ class InMemoryLedgerStore(InMemoryBudgetStore):
         self._save_operation(operation, response)
         return response
 
-    def void_movement(self, ref, reason, voided_at, operation, response):
+    def void_movement(self, ref, reason, voided_at, operation, response, on=None):
         if operation.operation_id in self.operations:
             raise OperationTaken()
         rows = self.incomes if ref.kind is MovementKind.INCOME else self.expenses
@@ -302,6 +320,8 @@ class InMemoryLedgerStore(InMemoryBudgetStore):
             raise AlreadyVoided(str(ref))
         self.writes += 1
         rows[index] = replace(rows[index], voided=True, void_reason=reason)
+        if ref.kind is MovementKind.EXPENSE:
+            self._settle_goals(on or voided_at.date())
         self._save_operation(operation, response)
 
     def get_income(self, income_id):
@@ -437,3 +457,86 @@ class InMemoryLedgerStore(InMemoryBudgetStore):
             for e in self.expenses
             if e.recurring_id is not None and e.month == month and not e.voided
         }
+
+    # --- Bolsas flexibles y metas (Hito 7) ---
+
+    def future_allocation_months(self, after):
+        return sorted(m for m in self.allocations if m > after)
+
+    def create_pocket(self, new, operation, respond):
+        if operation.operation_id in self.operations:
+            raise OperationTaken()
+        if any(normalize_name(p.name) == normalize_name(new.name) for p in self.pockets):
+            raise PocketAlreadyExists()
+        self.writes += 1
+        pocket_id = max((p.id for p in self.pockets), default=0) + 1
+        self.pockets.append(Pocket(pocket_id, new.name, new.behavior))
+        self.allocations[new.month] = {**new.existing, pocket_id: new.share}
+        response = respond(pocket_id)
+        self._save_operation(operation, response)
+        return response
+
+    def archive_pocket(self, pocket_id, at, months, operation, respond):
+        if operation.operation_id in self.operations:
+            raise OperationTaken()
+        self.writes += 1
+        self.pockets = [replace(p, active=False) if p.id == pocket_id else p for p in self.pockets]
+        self.goals = [
+            replace(g, archived=True) if g.pocket_id == pocket_id else g for g in self.goals
+        ]
+        for month, rows in months.items():
+            self.allocations[month] = dict(rows)
+        response = respond()
+        self._save_operation(operation, response)
+        return response
+
+    def list_goals(self):
+        return list(self.goals)
+
+    def create_goal(self, new, operation, respond, on):
+        if operation.operation_id in self.operations:
+            raise OperationTaken()
+        if any(g.live and g.pocket_id == new.pocket_id for g in self.goals):
+            raise GoalAlreadyActive("otra")
+        self.writes += 1
+        goal_id = len(self.goals) + 1
+        self.goals.append(
+            Goal(
+                goal_id,
+                new.pocket_id,
+                new.name,
+                new.target_amount,
+                new.target_date,
+                GoalStatus.ACTIVE,
+                None,
+                new.created_on,
+            )
+        )
+        self._settle_goals(on)
+        response = respond(goal_id)
+        self._save_operation(operation, response)
+        return response
+
+    def update_goal(self, change, operation, respond, on):
+        if operation.operation_id in self.operations:
+            raise OperationTaken()
+        index = next(i for i, g in enumerate(self.goals) if g.id == change.goal_id)
+        goal = self.goals[index]
+        status = change.status or goal.status
+        if status is GoalStatus.ACTIVE and any(
+            g.live and g.pocket_id == goal.pocket_id and g.id != goal.id for g in self.goals
+        ):
+            raise GoalAlreadyActive("otra")
+        self.writes += 1
+        self.goals[index] = replace(
+            goal,
+            target_amount=change.target_amount or goal.target_amount,
+            target_date=None
+            if change.clear_target_date
+            else (change.target_date or goal.target_date),
+            status=status,
+        )
+        self._settle_goals(on)
+        response = respond()
+        self._save_operation(operation, response)
+        return response

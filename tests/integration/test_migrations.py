@@ -15,7 +15,7 @@ from .conftest import alembic_config
 
 pytestmark = pytest.mark.integration
 
-HEAD = "0005_extras_recurring"
+HEAD = "0006_pockets_goals"
 
 
 def _scalar(url: str, sql: str, **params):
@@ -457,3 +457,115 @@ def test_0005_restricciones_y_disparadores(empty_database):
     )
     with pytest.raises(IntegrityError, match="reparto no se deshace"):
         _execute(url, f"UPDATE incomes SET allocation_status = 'repartido' {last}")
+
+
+# --- Hito 7: 0006_pockets_goals ---
+
+HITO6_DATA = (
+    *HITO5_DATA,
+    TEMPLATE,
+    "INSERT INTO recurring_expense_amounts (recurring_id, from_month, original_amount) "
+    "VALUES (1, '2026-11', 25000)",
+    "INSERT INTO expenses (expense_date, month, pocket_id, original_amount, amount, recurring_id) "
+    "VALUES ('2026-11-10', '2026-11', 1, 25000, 25000, 1)",
+    PENDING_EXTRA,
+)
+GOAL = (
+    "INSERT INTO savings_goals (pocket_id, name, target_amount, created_on) "
+    "VALUES (2, 'Viaje sintético', 500000, '2026-11-11')"
+)
+
+
+def test_0006_conserva_los_datos_del_hito_6(empty_database):
+    url, name = empty_database
+    assert_temp_database(url, name)
+    config = alembic_config(url)
+    command.upgrade(config, "0005_extras_recurring")
+    for sql in HITO6_DATA:
+        _execute(url, sql)
+    tables = (
+        "incomes",
+        "income_allocations",
+        "expenses",
+        "idempotency_keys",
+        "recurring_expenses",
+        "recurring_expense_amounts",
+        "budget_month_allocations",
+    )
+    before = {table: _rows(url, f"SELECT * FROM {table} ORDER BY 1, 2") for table in tables}
+    pockets_before = _rows(url, "SELECT * FROM pockets ORDER BY 1")
+
+    command.upgrade(config, "head")
+    assert _current_revision(url) == HEAD
+    for table in tables:
+        assert _rows(url, f"SELECT * FROM {table} ORDER BY 1, 2") == before[table], table
+    # pockets gana archived_at (NULL en las activas) y conserva todo lo demás
+    after = _rows(url, "SELECT * FROM pockets ORDER BY 1")
+    assert [row[:-1] for row in after] == pockets_before
+    assert {row[-1] for row in after} == {None}
+
+
+def test_0006_downgrade_protegido(empty_database, monkeypatch):
+    url, _ = empty_database
+    config = alembic_config(url)
+    command.upgrade(config, "head")
+    _execute(url, GOAL)
+    monkeypatch.delenv("ALLOW_DESTRUCTIVE_DOWNGRADE", raising=False)
+    with pytest.raises(RuntimeError, match="0006_pockets_goals cancelado"):
+        command.downgrade(config, "0005_extras_recurring")
+    assert _current_revision(url) == HEAD
+    assert _scalar(url, "SELECT count(*) FROM savings_goals") == 1
+
+    monkeypatch.setenv("ALLOW_DESTRUCTIVE_DOWNGRADE", "true")
+    command.downgrade(config, "0005_extras_recurring")
+    assert _scalar(url, "SELECT to_regclass('public.savings_goals')") is None
+    command.upgrade(config, "head")
+    assert _current_revision(url) == HEAD
+
+
+def test_0006_downgrade_se_niega_con_una_bolsa_archivada(empty_database, monkeypatch):
+    url, _ = empty_database
+    config = alembic_config(url)
+    command.upgrade(config, "head")
+    _execute(url, "UPDATE pockets SET active = FALSE, archived_at = now() WHERE name = 'Gustos'")
+    monkeypatch.delenv("ALLOW_DESTRUCTIVE_DOWNGRADE", raising=False)
+    with pytest.raises(RuntimeError, match="ALLOW_DESTRUCTIVE_DOWNGRADE=true"):
+        command.downgrade(config, "0005_extras_recurring")
+
+
+def test_0006_restricciones_y_disparadores(empty_database):
+    url, _ = empty_database
+    command.upgrade(alembic_config(url), "head")
+    _execute(url, GOAL)
+    bad = [
+        GOAL,  # segunda meta activa en la misma bolsa (RN-22)
+        "INSERT INTO savings_goals (pocket_id, name, target_amount, created_on) "
+        "VALUES (2, 'Cero', 0, '2026-11-11')",  # objetivo 0
+        "INSERT INTO savings_goals (pocket_id, name, target_amount, status, created_on) "
+        "VALUES (2, 'X', 1, 'lograda', '2026-11-11')",  # lograda sin fecha de logro
+        "INSERT INTO savings_goals (pocket_id, name, target_amount, status, created_on) "
+        "VALUES (2, 'X', 1, 'cancelada', '2026-11-11')",  # estado inválido
+        "UPDATE pockets SET active = FALSE WHERE name = 'Gustos'",  # archivada sin archived_at
+    ]
+    for sql in bad:
+        with pytest.raises(IntegrityError):
+            _execute(url, sql)
+    # una pausada libera el cupo: otra activa en la misma bolsa
+    _execute(url, "UPDATE savings_goals SET status = 'pausada' WHERE id = 1")
+    _execute(url, GOAL)
+    forbidden = [
+        ("DELETE FROM pockets WHERE name = 'Gustos'", "no se borra"),
+        ("DELETE FROM savings_goals", "no se borra"),
+        ("UPDATE pockets SET behavior = 'acumulable' WHERE name = 'Gustos'", "comportamiento"),
+        ("UPDATE savings_goals SET pocket_id = 1", "no cambian"),
+    ]
+    for sql, message in forbidden:
+        with pytest.raises(IntegrityError, match=message):
+            _execute(url, sql)
+    last = "WHERE id = (SELECT max(id) FROM savings_goals)"
+    _execute(url, f"UPDATE savings_goals SET status = 'lograda', achieved_on = '2026-11-12' {last}")
+    with pytest.raises(IntegrityError, match="se queda lograda"):
+        _execute(url, f"UPDATE savings_goals SET status = 'activa', achieved_on = NULL {last}")
+    _execute(url, "UPDATE pockets SET active = FALSE, archived_at = now() WHERE name = 'Gustos'")
+    with pytest.raises(IntegrityError, match="no se reactiva"):
+        _execute(url, "UPDATE pockets SET active = TRUE, archived_at = NULL WHERE name = 'Gustos'")

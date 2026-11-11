@@ -26,6 +26,7 @@ from puro_pockets.domain.errors import (
     PreviewRequired,
 )
 from puro_pockets.domain.extras import preview_token, validate_extra_shares
+from puro_pockets.domain.goals import balance_function, progress
 from puro_pockets.domain.idempotency import fingerprint, validate_operation_id
 from puro_pockets.domain.ledger import (
     MovementKind,
@@ -109,6 +110,13 @@ class RecentExtra(BaseModel):
     shares: list[PocketPercent] = Field(description="Porcentajes con que se repartió.")
 
 
+class ContextGoal(BaseModel):
+    pocket: str
+    target_amount: int = Field(description="Objetivo en colones.")
+    balance: int = Field(description="Saldo de la bolsa = avance (RN-23).")
+    percent: int = Field(description="Avance en %, con tope de 100.")
+
+
 class AllocationContextResult(BaseModel):
     extra: ExtraInfo
     month: str = Field(description="Mes presupuestario del extra: el de los datos siguientes.")
@@ -119,6 +127,10 @@ class AllocationContextResult(BaseModel):
     recurring_pending: ContextRecurring
     recent_extras: list[RecentExtra] = Field(
         description=f"Últimos {RECENT_EXTRAS} extras repartidos (solo porcentajes)."
+    )
+    goals: list[ContextGoal] = Field(
+        default_factory=list,
+        description="Metas activas con su avance (RN-05): bolsa, objetivo, saldo y %.",
     )
 
 
@@ -277,6 +289,7 @@ class ExtrasMixin(LedgerCore):
                     negative=negative,
                 )
             )
+        balance_of = balance_function(entries, expenses)
         recent = [
             RecentExtra(
                 budget_month=str(past.budget_month),
@@ -296,6 +309,16 @@ class ExtrasMixin(LedgerCore):
             pockets=pockets,
             recurring_pending=_recurring_context(self._pending_recurring(month)),
             recent_extras=recent,
+            goals=[
+                ContextGoal(
+                    pocket=names.get(goal.pocket_id, "?"),
+                    target_amount=goal.target_amount,
+                    balance=balance_of(goal.pocket_id),
+                    percent=progress(goal, balance_of(goal.pocket_id)).percent,
+                )
+                for goal in self._store.list_goals()
+                if goal.live
+            ],
         )
 
     # --- confirm_allocation (RN-01, RN-07, RN-08) ---
@@ -376,7 +399,7 @@ class ExtrasMixin(LedgerCore):
         )
         try:
             response = self._store.distribute_extra(
-                row.id, lines, operation, lambda: result.model_dump(mode="json")
+                row.id, lines, operation, lambda: result.model_dump(mode="json"), on=self._today()
             )
         except OperationTaken:
             return ExtraAllocationResult.model_validate(self._after_race(operation))
