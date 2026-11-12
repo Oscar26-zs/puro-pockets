@@ -1,4 +1,4 @@
-"""Registros que intercambian el servicio de movimientos y su almacén (Hitos 5 a 8).
+"""Registros que intercambian el servicio de movimientos y su almacén (Hitos 5 a 9).
 
 `services/ledger.py` los reexporta, así que los almacenes y las pruebas pueden importarlos desde
 cualquiera de los dos módulos.
@@ -18,6 +18,7 @@ from puro_pockets.domain.balances import (
     TransferEntry,
 )
 from puro_pockets.domain.categories import Category
+from puro_pockets.domain.closures import ClosureState
 from puro_pockets.domain.goals import Goal, GoalStatus
 from puro_pockets.domain.ledger import MovementRef
 from puro_pockets.domain.money import Converted, Currency
@@ -183,6 +184,42 @@ class LedgerSnapshot:
     entries: list[AllocationEntry]
     expenses: list[ExpenseEntry]
     transfers: list[TransferEntry]
+
+
+@dataclass(frozen=True)
+class ClosureAdjustmentRow:
+    month: Month
+    pocket_id: int
+    kind: str
+    amount: int  # con signo: sobrante +, sobregasto −
+
+
+@dataclass(frozen=True)
+class ClosureSnapshot:
+    """Lo que hace falta para la vista previa y el cierre de un mes, leído de una vez (Hito 9). En
+    `record_closure` se lee dentro de la transacción, con el bloqueo exclusivo de cierres y todas
+    las bolsas bloqueadas, para volver a calcular con las mismas funciones de `domain/`."""
+
+    month: Month
+    pockets: list[Pocket]
+    entries: list[AllocationEntry]
+    expenses: list[ExpenseEntry]
+    transfers: list[TransferEntry]
+    goals: list[Goal]
+    state: ClosureState
+    pending_extras: list[int]  # ids de los extras pendientes con ese mes presupuestario
+    surplus_targets: dict[int, int]  # bolsa de consumo -> acumulable sugerida (6.5)
+
+
+@dataclass(frozen=True)
+class ClosureWrite:
+    """Lo que `record_closure` guarda: transferencias `cierre_de_mes` (origen, destino, monto) en
+    orden, ajustes (bolsa, tipo, monto con signo) y cómo armar la respuesta con los ids de las
+    transferencias."""
+
+    transfers: list[tuple[int, int, int]]
+    adjustments: list[tuple[int, str, int]]
+    respond: Callable[[list[int]], dict]
 
 
 class OperationTaken(Exception):  # noqa: N818 - señal interna, no un error de negocio
@@ -363,3 +400,38 @@ class LedgerStore(BudgetStore, Protocol):
         devuelve cómo armar la respuesta; inserta la fila, evalúa las metas (RN-24) con la fecha
         `on` y guarda la clave de operación."""
         ...
+
+    # --- Cierre de mes (Hito 9) ---
+
+    def closure_snapshot(self, month: Month) -> ClosureSnapshot: ...
+
+    def closure_adjustments(self, month: Month | None) -> list[ClosureAdjustmentRow]:
+        """Ajustes de cierre de un mes, o de todos con None."""
+        ...
+
+    def record_closure(
+        self,
+        month: Month,
+        closed_at: datetime,
+        day: date,
+        operation: Operation,
+        verify: Callable[[ClosureSnapshot], ClosureWrite],
+    ) -> dict:
+        """Cierra el mes de forma atómica (RN-46). En una transacción: bloqueo exclusivo de cierres,
+        `FOR UPDATE` de todas las bolsas en orden de id, lectura del estado y `verify` (que vuelve a
+        validar y calcular, y lanza `DomainError` si algo cambió); después la fila de
+        `month_closures`, las transferencias `cierre_de_mes` (fecha `day`, mes `month`), los
+        ajustes, la evaluación de metas (RN-24) con `day` y la clave de operación."""
+        ...
+
+    def surplus_targets(self) -> dict[int, int]:
+        """{bolsa de consumo: acumulable sugerida} (6.5)."""
+        ...
+
+    def set_surplus_target(
+        self,
+        pocket_id: int,
+        target_id: int | None,
+        operation: Operation,
+        respond: Callable[[], dict],
+    ) -> dict: ...

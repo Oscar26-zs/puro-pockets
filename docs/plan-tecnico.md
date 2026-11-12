@@ -1,6 +1,6 @@
 # Plan técnico de Puro Pockets
 
-**Versión:** 0.10
+**Versión:** 0.11
 **Fecha:** 2026-11-11
 **Capa:** 2 en la gobernanza de `.specify/memory/constitution.md`. Decide la técnica; si contradice a
 la constitución, gana la constitución y se corrige este documento.
@@ -42,8 +42,8 @@ esquema o la arquitectura.
   MCP.
 - **En español:** documentación y mensajes que ve el usuario (incluidos los mensajes de error que
   devuelven las tools).
-- El esquema de referencia de la sección 17 y la tabla concepto → tabla todavía usan nombres del
-  borrador en español; se pasan al inglés antes de crear cada tabla.
+- El esquema de referencia de la sección 17 y la tabla concepto → tabla ya usan los nombres en
+  inglés de todas las tablas (las últimas, `month_closures` y `closure_adjustments`, en el Hito 9).
 - **"Bolsa" en el código [DECIDIDO] (Hito 4):** `pocket` en tablas, columnas y código (`pockets`,
   `pocket_id`). Las tools conservan los nombres del catálogo de la sección 12.1 (`list_bolsas`,
   `create_bolsa`, `get_bolsa_status`…), porque "bolsa" es el término del glosario.
@@ -205,8 +205,8 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
   respuesta lista las bolsas con saldo disponible.
 - **Anulación:** `void_transaction` (vista previa sin `confirm`) marca `voided`, `voided_at` y
   `void_reason`; todo cálculo ignora lo anulado. Anular un ingreso revierte su reparto (RN-59).
-  Anular el saldo inicial permite otra carga (índice único parcial con `AND NOT voided`). Hasta el
-  Hito 9 todos los meses están abiertos.
+  Anular el saldo inicial permite otra carga (índice único parcial con `AND NOT voided`). Solo se
+  anula en un mes abierto (regla única de mes cerrado, Hito 9).
 - **Referencias:** `I-<n>` (ingresos, incluido el saldo inicial) y `G-<n>` (gastos), con el número de
   fila; no se expone otro identificador.
 - **Idempotencia:** `operation_id` obligatorio en `add_income` (al confirmar), `add_expense` y
@@ -358,9 +358,9 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
 - **Validaciones:** monto entero positivo en colones (sin texto ni decimales) y origen distinto del
   destino (RN-41); bolsas activas por nombre sin distinguir mayúsculas; no más de lo disponible en el
   origen y nunca desde una bolsa en negativo (RN-42); motivo `cubrir_sobregasto`, `reasignacion` o
-  `ajuste` (`cierre_de_mes` reservado para el Hito 9: la tool lo rechaza); nota de hasta 140; fecha
+  `ajuste` (`cierre_de_mes` es solo de `close_month`: la tool lo rechaza); nota de hasta 140; fecha
   siempre hoy en `APP_TIMEZONE` (`transfer_date` opcional, solo la de hoy) [PROPUESTO] y mes de esa
-  fecha. Hasta el Hito 9 todos los meses están abiertos (RN-44 se completa allí).
+  fecha; un mes cerrado no admite transferencias (RN-44, Hito 9).
 - **Atomicidad y concurrencia:** una transacción bloquea las dos filas de `pockets` con
   `SELECT … FOR UPDATE` en orden de id (sin interbloqueos entre transferencias cruzadas), vuelve a
   leer sus movimientos y valida RN-41/RN-42 otra vez antes del INSERT; en la misma transacción evalúa
@@ -386,6 +386,80 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
 - **Registros:** sin montos, notas, nombres de bolsas ni de metas (solo `T-n`, mes, motivo y cuántas
   metas se afectaron). La nota se ve en la respuesta y en `list_transactions`.
 
+### Cierre de mes [DECIDIDO] (Hito 9)
+
+- **Código:** `domain/closures.py` (regla única de mes cerrado, qué mes se cierra, cierre pendiente,
+  datos del mes, validación de la propuesta y resultado), `domain/balances.py` (`integrity_gap` con
+  meses cerrados y ajustes), `services/closing.py` (mixin `ClosingMixin` de `LedgerService`),
+  `mcp/closing_tools.py`. Migración `0008_month_closures`.
+- **Una sola regla de mes cerrado (RN-44, RN-48, RN-53):** `domain.closures.is_closed`: un mes está
+  cerrado si tiene su cierre guardado o es anterior o igual al último mes cerrado. Un mes sin fila
+  (y posterior al último cerrado) está abierto. La usan los servicios para fallar temprano
+  (`_ensure_open`) y el almacén dentro de cada transacción de escritura (`_guard_months`). Aplica a
+  gastos (mes calendario), ingresos, saldo inicial y extras (mes presupuestario), repartos de extras
+  y anulaciones (mes del movimiento), transferencias (su mes) y porcentajes (el mes escrito por
+  `set_allocation`, `create_bolsa` y `archive_bolsa`). Errores sin montos ni notas.
+- **Qué mes se cierra [PROPUESTO]:** desde su último día (hoy en `APP_TIMEZONE` ≥ último día), en
+  orden estricto de meses consecutivos: el primero cerrable es el siguiente al último cerrado o, sin
+  cierres, el más antiguo con movimientos (ingresos de cualquier tipo o estado, gastos incluidos los
+  anulados, transferencias). Un mes vacío en medio también se cierra (cierre trivial). Ya cerrado,
+  futuro, fuera de orden o anterior al primero con movimientos: error claro sin montos. Extras
+  pendientes del mes (RN-09) bloquean; fijos pendientes solo avisan.
+- **Vista previa (principio 3.2):** `preview_month_close` sin propuesta devuelve datos (11.1 por
+  bolsa de consumo: sobrante o déficit; 11.2 por acumulable: saldo y meta activa; extras y fijos
+  pendientes; destino sugerido, 6.5). Con propuesta valida y devuelve cómo queda cada bolsa, el
+  efecto en las metas (RN-58), el sobrante no destinado y el sobregasto no cubierto, las
+  transferencias a crear y la ficha. Siempre avisa que el mes no admitirá más movimientos, ni de
+  hoy. La app no recomienda (principio 3.1).
+- **Validación (10.1, 10.2, RN-47, RN-50, RN-52):** déficit y sobrante solo en bolsas de consumo
+  activas (una acumulable en negativo se avisa con el camino para corregirla: una transferencia hacia
+  ella). Cobertura: hacia una de consumo con déficit, sin cubrir de más, desde un sobrante de consumo
+  o desde el saldo positivo de una acumulable. Destino: desde un sobrante de consumo hacia una
+  acumulable activa o `null` (no destinado). Lo que sale de una bolsa no supera su sobrante o saldo.
+  Orden fijo: mientras quede un déficit sin cubrir, o si una cobertura sale de una acumulable, todo
+  el sobrante de consumo va a coberturas. La cobertura desde acumulable es opcional: sin ella, lo
+  restante queda como sobregasto no cubierto y el mes se cierra igual. Montos enteros JSON; pares
+  repetidos y bolsas archivadas o inexistentes se rechazan. Una archivada con cifras en el mes se
+  lista y su resto va entero a ajustes.
+- **Ficha:** SHA-256 en dos mitades: la propuesta (mes, ids, montos) y una instantánea del estado
+  (cifras de cada bolsa, metas activas, extras pendientes). Otra propuesta o sin ficha: "pide la
+  vista previa"; misma propuesta con el estado cambiado: "el estado cambió, repite la vista previa".
+- **Atomicidad y concurrencia (RN-46):** `record_closure` en una transacción: bloqueo consultivo de
+  cierres exclusivo (`pg_advisory_xact_lock(0x5050, 0)`), `FOR UPDATE` de todas las bolsas en orden
+  de id, nueva lectura y recálculo completo (si la ficha no coincide, no se guarda nada), fila de
+  `month_closures`, transferencias `cierre_de_mes` (fecha hoy, mes el cerrado, sin nota), ajustes,
+  `_settle_goals` con hoy y la clave de operación. Las escrituras que tocan un mes toman el mismo
+  bloqueo en modo compartido antes de bloquear bolsas o escribir (siguen en paralelo entre sí): un
+  gasto que llega durante el cierre espera y se rechaza por mes cerrado; si entró antes, el cierre
+  pide repetir la vista previa. Un solo bloqueo global (no uno por mes) porque cerrar M cierra todos
+  los meses ≤ M. Orden "guardia, bolsas, filas" en todas las rutas: sin interbloqueos (probado con
+  gasto, transferencia y cierre simultáneos).
+- **Mes actual cerrado (cierre hecho el último día) [PROPUESTO]:** `set_allocation` de ese mes se
+  rechaza; `create_bolsa` y `archive_bolsa` aplican desde el primer mes abierto y lo dicen en la
+  vista previa (RN-18 de consumo se comprueba en ese mes). Archivar una acumulable la quita como
+  destino sugerido de las bolsas que la tenían.
+- **Consultas:** `get_summary` y `list_bolsas` traen `pending_closure` (RN-49: meses terminados sin
+  cerrar desde el primero cerrable, con `has_movements`); `get_summary` y `get_bolsa_status` de un
+  mes cerrado traen `month_closed` y sus ajustes (RN-50).
+- **Ritual (RN-51):** las instrucciones del servidor lo explican: `preview_month_close`, propuesta de
+  Claude con explicación breve, aprobación explícita, `close_month` y luego el salario del mes
+  siguiente y los porcentajes si cambian. La nota del Hito 6 sigue valiendo: `confirm=true` no
+  garantiza por sí solo que el modelo haya preguntado.
+- **Destino sugerido (6.5):** `set_surplus_destination` escribe `pockets.surplus_target_pocket_id`
+  (columna de 0003, reutilizada): bolsa de consumo activa, destino acumulable activa o `null`.
+- **Sin reapertura (RN-48) [PROPUESTO]:** no hay tool para reabrir ni borrar cierres; disparadores
+  `trg_month_closures_guard` (no se borra ni sale de `cerrado`, ni cambia mes o instante) y
+  `trg_closure_adjustments_immutable` (sin UPDATE ni DELETE). Una corrección posterior es una
+  transferencia `ajuste` o un movimiento nuevo en un mes abierto (README).
+- **Transferencias (0008):** CHECK `ck_transfers_month_date`: el mes es el de la fecha, salvo
+  `cierre_de_mes`, cuyo mes es el cerrado y nunca posterior al de la fecha. El upgrade comprueba
+  antes los datos.
+- **Idempotencia:** `operation_id` en `close_month` (al confirmar) y `set_surplus_destination`.
+- **Downgrade protegido:** `0008_month_closures` aborta si hay cierres o ajustes, salvo con
+  `ALLOW_DESTRUCTIVE_DOWNGRADE=true`.
+- **Registros:** sin montos, notas, nombres de bolsas ni de metas (solo mes y cuántas
+  transferencias, ajustes y metas afectadas).
+
 ---
 
 ## 12. Integración con Claude (MCP)
@@ -396,7 +470,7 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
 |---|---|---|
 | `preview_initial_balance` | Vista previa del saldo inicial (total y monto por bolsa) sin guardar nada (principio 3.2). | [DECIDIDO] (Hito 4) |
 | `load_initial_balance` | Cargar el saldo inicial repartido por montos entre bolsas (una sola vez). | [DECIDIDO] |
-| `list_bolsas` | Listar las bolsas activas con su comportamiento y su saldo (acumulable, 11.2) o disponible del mes actual (consumo, 11.1). | [DECIDIDO] (Hito 4) |
+| `list_bolsas` | Listar las bolsas activas con su comportamiento y su saldo (acumulable, 11.2) o disponible del mes actual (consumo, 11.1), y los meses con cierre pendiente (RN-49). | [DECIDIDO] (Hito 4; cierre pendiente en el Hito 9) |
 | `add_expense` | Registrar gasto (con moneda y, si es USD, tipo de cambio). Si deja una bolsa en negativo, devuelve advertencia con las bolsas disponibles. | [DECIDIDO] (Hito 5) |
 | `preview_income` | Vista previa del salario: mes presupuestario y reparto por bolsa, sin guardar nada (principio 3.2). | [DECIDIDO] (Hito 5) |
 | `add_income` | Registrar ingreso base (con moneda y tipo de cambio si aplica); exige `confirm=true`. | [DECIDIDO] (Hito 5) |
@@ -404,9 +478,9 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
 | `register_extra_income` | Registrar ingreso extra en estado pendiente ("sin asignar"), en el mes de su fecha (RN-09). | [DECIDIDO] (Hito 6) |
 | `get_allocation_context` | Entregar a Claude el panorama del mes: presupuesto original y ajustado vs gastado por bolsa, fijos pendientes, metas y repartos previos (solo agregados). | [DECIDIDO] (Hito 6; metas en el Hito 7; presupuesto ajustado en el Hito 8) |
 | `confirm_allocation` | Confirmar el reparto de un extra (valida suma = 100). Sin `confirm` devuelve la vista previa y su `preview_token`; con `confirm=true` lo exige. | [DECIDIDO] (Hito 6) |
-| `void_transaction` | Anular un ingreso o gasto con motivo, solo en mes abierto (todos abiertos hasta el Hito 9); vista previa sin `confirm`. Reemplaza a `update_transaction` y `delete_transaction`. Las transferencias (`T-n`) no se anulan (RN-43). | [DECIDIDO] (Hito 5) |
+| `void_transaction` | Anular un ingreso o gasto con motivo, solo en mes abierto (regla única de mes cerrado, Hito 9); vista previa sin `confirm`. Reemplaza a `update_transaction` y `delete_transaction`. Las transferencias (`T-n`) no se anulan (RN-43). | [DECIDIDO] (Hito 5) |
 | `get_bolsa_status` | Estado de una bolsa: asignado, transferencias, presupuesto ajustado, gastado, disponible con % usado (ajustado y original) y avance de su meta si la tiene. | [DECIDIDO] (Hito 5; meta en el Hito 7; transferencias en el Hito 8) |
-| `get_summary(mes)` | Resumen mensual, con el presupuesto original y el ajustado de cada bolsa. | [DECIDIDO] (Hito 5; ajustado en el Hito 8) |
+| `get_summary(mes)` | Resumen mensual, con el presupuesto original y el ajustado de cada bolsa; si el mes está cerrado, sus ajustes; y los meses con cierre pendiente (RN-49). | [DECIDIDO] (Hito 5; ajustado en el Hito 8; cierre en el Hito 9) |
 | `top_categories` | En qué se gasta más. | [DECIDIDO] (Hito 5) |
 | `list_transactions` | Listar movimientos con filtros (20 por defecto, máximo 100), incluidas las transferencias (`T-n`). | [DECIDIDO] (Hito 5; transferencias en el Hito 8) |
 | `manage_recurring` | Crear, listar, modificar y desactivar gastos fijos (nunca se borran). | [DECIDIDO] (Hito 6) |
@@ -421,14 +495,15 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
 | `update_goal` | Cambiar monto o fecha, pausar o reactivar. | [DECIDIDO] (Hito 7) |
 | `preview_transfer` | Simular movimiento entre bolsas (con aviso de efecto en metas, RN-58); devuelve la ficha. | [DECIDIDO] (Hito 8) |
 | `transfer_between_bolsas` | Registrar movimiento entre bolsas (vista previa sin `confirm`; con `confirm=true` exige la ficha). | [DECIDIDO] (Hito 8) |
-| `preview_month_close` | Calcular déficits y sobrantes del mes, con propuesta. | [DECIDIDO] |
-| `close_month` | Ejecutar el cierre (atómico). | [DECIDIDO] |
+| `preview_month_close` | Datos del cierre de un mes (déficits, sobrantes, saldos y metas, extras y fijos pendientes, destino sugerido) y, con la propuesta de Claude, el resultado y la ficha; no guarda nada. | [DECIDIDO] (Hito 9) |
+| `close_month` | Ejecutar el cierre (atómico): transferencias `cierre_de_mes`, ajustes, metas y marca de cerrado; vista previa sin `confirm`; con `confirm=true` exige la ficha. | [DECIDIDO] (Hito 9) |
+| `set_surplus_destination` | Fijar o quitar el destino de sobrante sugerido de una bolsa de consumo (6.5). | [DECIDIDO] (Hito 9) |
 
 **Tools eliminadas en v0.2:** `contribute_to_goal`, `withdraw_from_goal`, `spend_from_goal`, `update_transaction`, `delete_transaction`. Las metas ya no reciben ni entregan dinero por separado (sección 7), y las correcciones se hacen por anulación (RN-53).
 
 ### 12.2 Reglas para las tools
 1. Las tools devuelven datos exactos y validan reglas. No dan consejos.
-2. Las tools que modifican dinero deben ser **idempotentes** o aceptar una clave de operación, para que una llamada repetida por Claude no duplique un movimiento. **[DECIDIDO] (Hito 5):** `operation_id` obligatorio en `add_income` (al confirmar), `add_expense` y `void_transaction`; misma clave y mismo contenido devuelven la respuesta original, otro contenido es error. **(Hito 6):** también en `register_extra_income`, `confirm_allocation` (al confirmar) y `manage_recurring` (crear, actualizar, desactivar). **(Hito 7):** también en `create_bolsa` y `archive_bolsa` (al confirmar), `create_goal` y `update_goal`. **(Hito 8):** también en `transfer_between_bolsas` (al confirmar).
+2. Las tools que modifican dinero deben ser **idempotentes** o aceptar una clave de operación, para que una llamada repetida por Claude no duplique un movimiento. **[DECIDIDO] (Hito 5):** `operation_id` obligatorio en `add_income` (al confirmar), `add_expense` y `void_transaction`; misma clave y mismo contenido devuelven la respuesta original, otro contenido es error. **(Hito 6):** también en `register_extra_income`, `confirm_allocation` (al confirmar) y `manage_recurring` (crear, actualizar, desactivar). **(Hito 7):** también en `create_bolsa` y `archive_bolsa` (al confirmar), `create_goal` y `update_goal`. **(Hito 8):** también en `transfer_between_bolsas` (al confirmar). **(Hito 9):** también en `close_month` (al confirmar) y `set_surplus_destination`.
 3. Las tools destructivas o de reparto piden confirmación del usuario antes de ejecutarse.
 4. Las respuestas de error deben ser claras para que Claude pueda explicarlas.
 5. Toda tool que reciba un monto en dólares exige el tipo de cambio (RN-57). Si falta, devuelve error en lugar de asumirlo. Esto incluye el pago de un gasto fijo en USD (decisión #12d): nunca se reutiliza el último tipo de cambio.
@@ -667,22 +742,34 @@ CREATE INDEX ix_transfers_month ON transfers (month);
 CREATE INDEX ix_transfers_from_month ON transfers (from_pocket_id, month);
 CREATE INDEX ix_transfers_to_month ON transfers (to_pocket_id, month);
 -- Disparador (0007): trg_transfers_immutable rechaza UPDATE y DELETE (RN-43)
+-- CHECK (0008): ck_transfers_month_date: month = mes de transfer_date, salvo 'cierre_de_mes'
+--   (mes cerrado, nunca posterior al de la fecha)
 
--- Estado de cada mes
+-- Meses cerrados (Hito 9, migración 0008). Un mes sin fila cuenta como abierto (salvo que sea
+-- anterior al último cerrado); la migración no cierra nada
 CREATE TABLE month_closures (
-  mes CHAR(7) PRIMARY KEY CHECK (mes ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
-  estado TEXT NOT NULL DEFAULT 'abierto' CHECK (estado IN ('abierto','cerrado')),
-  cerrado_en TIMESTAMPTZ
+  month CHAR(7) PRIMARY KEY CHECK (month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+  status TEXT NOT NULL DEFAULT 'cerrado' CHECK (status IN ('abierto','cerrado')),
+  closed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK ((status = 'cerrado') = (closed_at IS NOT NULL))
 );
+-- Disparador (0008): trg_month_closures_guard: sin DELETE; un mes cerrado no sale de 'cerrado' ni
+-- cambia su mes o su instante (RN-48)
 
--- Sobrantes no destinados y sobregastos no cubiertos al cerrar
+-- Sobrantes no destinados y sobregastos no cubiertos al cerrar (RN-50, 10.2). Hito 9, 0008
 CREATE TABLE closure_adjustments (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  mes CHAR(7) NOT NULL REFERENCES month_closures(mes),
-  bolsa_id BIGINT NOT NULL REFERENCES pockets(id),
-  tipo TEXT NOT NULL CHECK (tipo IN ('sobrante_no_destinado','sobregasto_no_cubierto')),
-  monto BIGINT NOT NULL                                -- con signo: sobrante +, sobregasto -
+  month CHAR(7) NOT NULL REFERENCES month_closures(month) ON DELETE RESTRICT,
+  pocket_id BIGINT NOT NULL REFERENCES pockets(id) ON DELETE RESTRICT,
+  kind TEXT NOT NULL CHECK (kind IN ('sobrante_no_destinado','sobregasto_no_cubierto')),
+  amount BIGINT NOT NULL,                              -- con signo: sobrante +, sobregasto -
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK ((kind = 'sobrante_no_destinado' AND amount > 0)
+      OR (kind = 'sobregasto_no_cubierto' AND amount < 0)),
+  UNIQUE (month, pocket_id, kind)
 );
+-- Disparador (0008): trg_closure_adjustments_immutable rechaza UPDATE y DELETE
 ```
 
 **Cambios en v0.3:** traducción técnica a PostgreSQL (sin `PRAGMA`; `BOOLEAN`, `DATE`/`TIMESTAMPTZ`, `BIGINT`; mes como `CHAR(7)` con `CHECK` de formato). No cambia ninguna regla.
@@ -697,8 +784,12 @@ CREATE TABLE closure_adjustments (
 - No se transfiere más del saldo o disponible de la bolsa de origen, ni desde una bolsa en negativo
   (RN-42); se valida otra vez dentro de la transacción, con las dos bolsas bloqueadas.
 - Una transferencia es entre dos bolsas activas, con la fecha de hoy; la tool no acepta el motivo
-  `cierre_de_mes` (Hito 9).
-- Un mes cerrado no admite movimientos nuevos ni anulaciones (RN-44, RN-48, RN-53).
+  `cierre_de_mes` (solo lo registra `close_month`).
+- Un mes cerrado (o anterior al último cerrado) no admite movimientos, repartos, transferencias,
+  anulaciones ni cambios de porcentajes (RN-44, RN-48, RN-53); lo decide `domain.closures.is_closed`
+  y se comprueba otra vez dentro de la transacción, con el bloqueo de cierres compartido.
+- Un mes se cierra desde su último día, en orden y sin extras pendientes; la propuesta cumple 10.1,
+  10.2, RN-47 y RN-52, y se recalcula dentro de la transacción del cierre.
 - Una bolsa solo se archiva con saldo (o disponible del mes) cero (RN-18), comprobado dentro de la
   transacción con la bolsa bloqueada.
 - El saldo inicial se carga una sola vez mientras esté vigente (RN-54); anulado, se permite otra carga.
@@ -737,7 +828,7 @@ esquema de la sección 17, con los valores que se guardan para estados, tipos y 
 | Mes calendario del gasto (RN-32) | `expenses.month` | `'YYYY-MM'` |
 | Gasto pendiente de clasificar (RN-34) | `expenses.category_id` | `NULL` |
 | Anulación con registro (RN-53) | `voided`, `voided_at`, `void_reason` en `incomes` y `expenses` | `voided`: `TRUE`, `FALSE` |
-| Clave de operación (12.2.2) | `idempotency_keys` | `tool`: `add_income`, `add_expense`, `void_transaction`, `register_extra_income`, `confirm_allocation`, `manage_recurring`, `create_bolsa`, `archive_bolsa`, `create_goal`, `update_goal`, `transfer_between_bolsas` |
+| Clave de operación (12.2.2) | `idempotency_keys` | `tool`: `add_income`, `add_expense`, `void_transaction`, `register_extra_income`, `confirm_allocation`, `manage_recurring`, `create_bolsa`, `archive_bolsa`, `create_goal`, `update_goal`, `transfer_between_bolsas`, `close_month`, `set_surplus_destination` |
 | Gasto fijo mensual (8.1) | `recurring_expenses` (`active`) | `TRUE` activo, `FALSE` desactivado |
 | Monto del gasto fijo por mes (8.1) | `recurring_expense_amounts` (`from_month`, `original_amount`) | CRC en colones; USD en centavos |
 | Pago de un gasto fijo (RN-35) | `expenses.recurring_id` | id de la plantilla u omitido |
@@ -745,16 +836,17 @@ esquema de la sección 17, con los valores que se guardan para estados, tipos y 
 | Estado de una meta (RN-24) | `savings_goals.status`, `achieved_on` | `activa`, `lograda` (con fecha de logro), `pausada` |
 | Meta archivada con su bolsa (6.4) | `savings_goals.archived_at` | instante u omitido |
 | El registro de transferencias (RN-40) | `transfers` (`transfer_date`, `month`, `from_pocket_id`, `to_pocket_id`, `amount`, `note`) | colones enteros; nota hasta 140 |
-| Motivo de una transferencia (sección 9) | `transfers.reason` | `cubrir_sobregasto`, `reasignacion`, `cierre_de_mes` (solo el cierre, Hito 9), `ajuste` |
+| Motivo de una transferencia (sección 9) | `transfers.reason` | `cubrir_sobregasto`, `reasignacion`, `cierre_de_mes` (solo `close_month`, con el mes cerrado), `ajuste` |
 | Transferencias recibidas y enviadas del mes (9.1) | suma de `transfers.amount` por `to_pocket_id` / `from_pocket_id` y `month` | colones; se derivan, no se guardan |
-| Estado del mes (RN-49) | `month_closures.estado` | `abierto`, `cerrado` |
-| Ajustes de cierre (RN-50, 10.2) | `closure_adjustments.tipo` | `sobrante_no_destinado`, `sobregasto_no_cubierto` |
+| Estado del mes (RN-49) | `month_closures` (`month`, `status`, `closed_at`) | `cerrado` (sin fila = abierto, salvo si es anterior al último cerrado) |
+| Ajustes de cierre (RN-50, 10.2) | `closure_adjustments` (`month`, `pocket_id`, `kind`, `amount`) | `kind`: `sobrante_no_destinado` (monto +), `sobregasto_no_cubierto` (monto −) |
+| Cierre pendiente (RN-49) | se deriva de `month_closures` y de los meses con movimientos | meses terminados sin cerrar, desde el primero cerrable |
 
 **Idioma de los nombres:** decidido en el Hito 1: inglés (ver "Convención de idioma"). Ya están en
 inglés las tablas de los Hitos 4 a 6 (`pockets`, `categories`, `budget_month_allocations`, `incomes`,
 `income_allocations`, `expenses`, `idempotency_keys`, `recurring_expenses`,
-`recurring_expense_amounts`, `savings_goals`, Hito 7; `transfers`, Hito 8); el resto conserva los nombres del borrador y
-se pasa al inglés antes de crear cada tabla. Los **valores** guardados (columna de la derecha) se mantienen como están.
+`recurring_expense_amounts`, `savings_goals`, Hito 7; `transfers`, Hito 8; `month_closures` y
+`closure_adjustments`, Hito 9): ya no queda ninguna con el nombre del borrador. Los **valores** guardados (columna de la derecha) se mantienen como están.
 
 ---
 
@@ -772,3 +864,4 @@ se pasa al inglés antes de crear cada tabla. Los **valores** guardados (columna
 | 0.8 | 2026-11-11 | Hito 6: sección "Extras y gastos fijos (Hito 6)" (extra pendiente y "sin asignar", contexto con solo agregados, reparto con ficha de vista previa, instrucciones del servidor, límite de `confirm=true` y su mitigación, plantillas con historial de monto, pendientes y pago enlazado, referencias `F-`, idempotencia, disparadores y downgrade protegido); esquema de la sección 17 con `recurring_expenses`, `recurring_expense_amounts`, `expenses.recurring_id` y las restricciones nuevas de `incomes` (migración `0005_extras_recurring`); catálogo con `list_pending_recurring`; reglas 12.2.2 y 12.2.5 ampliadas; tabla concepto → tabla actualizada. |
 | 0.9 | 2026-11-11 | Hito 7: sección "Bolsas flexibles y metas (Hito 7)" (reajuste puro con prueba de propiedades, crear bolsa atómica con el conjunto completo del mes, lectura [PROPUESTO] de RN-15, archivado inmediato que reescribe el mes actual y los futuros, bolsa archivada en las tools anteriores, metas sin dinero propio con una sola fuente del saldo, evaluación centralizada de `lograda`, números del RN-28, confirmación con ficha, disparadores y downgrade protegido); esquema de la sección 17 con `pockets.archived_at` y `savings_goals` en inglés (migración `0006_pockets_goals`); catálogo y regla 12.2.2 actualizados; tabla concepto → tabla con metas y archivado. |
 | 0.10 | 2026-11-11 | Hito 8: sección "Transferencias (Hito 8)" (una sola función de cálculo para 9.1, 11.1 y 11.2, vista previa con efecto en metas y ficha, validaciones, bloqueo de las dos bolsas y nueva validación dentro de la transacción, archivado con bloqueo, inmutabilidad en la base, referencias `T-`, sobregasto guiado hacia la transferencia, idempotencia, downgrade protegido y registros); esquema de `transfers` en inglés con ON DELETE RESTRICT, nota ≤ 140 e índices (migración `0007_transfers`); catálogo y regla 12.2.2 actualizados; validaciones y tabla concepto → tabla con transferencias. |
+| 0.11 | 2026-11-11 | Hito 9: sección "Cierre de mes (Hito 9)" (regla única de mes cerrado usada por todas las escrituras y comprobada dentro de la transacción, qué mes se cierra y en qué orden, vista previa con datos y con propuesta, validación de 10.1, 10.2, RN-47, RN-50 y RN-52, ficha en dos mitades, transacción con bloqueo consultivo de cierres y bolsas bloqueadas, mes actual cerrado, cierre pendiente, ritual RN-51, destino sugerido 6.5, sin reapertura, CHECK del mes de las transferencias, idempotencia, downgrade y registros); esquema de `month_closures` y `closure_adjustments` en inglés (migración `0008_month_closures`); catálogo con `preview_month_close`, `close_month` y `set_surplus_destination`; regla 12.2.2, validaciones y tabla concepto → tabla actualizadas; se quitan las frases "hasta el Hito 9 todos los meses están abiertos". |

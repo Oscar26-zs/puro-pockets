@@ -3,13 +3,14 @@
 Los saldos salen de lo asignado por los ingresos repartidos (incluido el saldo inicial), más las
 transferencias recibidas, menos las enviadas y los gastos (Hito 8). Lo anulado no llega aquí: el
 almacén solo entrega movimientos vigentes (RN-53); las transferencias nunca se anulan (RN-43).
-Todavía no hay cierres (Hito 9): todos los meses están abiertos. Nada se guarda: todo se deriva
-(principio 3.3). `pocket_figures` es la única función que arma las cifras de una bolsa.
+Con el cierre de mes (Hito 9), el disponible de un mes cerrado queda en la tabla de ajustes y el
+invariante suma solo los meses abiertos. Nada se guarda: todo se deriva (principio 3.3).
+`pocket_figures` es la única función que arma las cifras de una bolsa.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -237,12 +238,16 @@ def integrity_gap(
     entries: Sequence[AllocationEntry],
     expenses: Sequence[ExpenseEntry] = (),
     transfers: Sequence[TransferEntry] = (),
+    is_month_closed: Callable[[Month], bool] = lambda _month: False,
+    adjustment_total: int = 0,
 ) -> int:
     """Invariante 11.4. Devuelve 0 si cuadra.
 
     Σ ingresos repartidos (incluye el saldo inicial) − Σ gastos
-      = Σ saldos de acumulables + Σ disponibles de consumo de los meses abiertos (todos, sin cierre)
-      + Σ ajustes de cierre (aún no hay)
+      = Σ saldos de acumulables + Σ disponibles de consumo de los meses abiertos
+      + Σ ajustes de cierre (sobrante no destinado suma; sobregasto no cubierto resta)
+
+    `is_month_closed` es `domain.closures.is_closed` aplicada a los cierres guardados (Hito 9).
 
     Las transferencias no aparecen a la izquierda: no crean ni destruyen dinero, solo lo mueven
     entre bolsas del lado derecho.
@@ -258,6 +263,8 @@ def integrity_gap(
                 | {t.month for t in transfers if pocket.id in (t.from_pocket_id, t.to_pocket_id)}
             )
             right += sum(
-                consumption_available(entries, pocket.id, m, expenses, transfers) for m in months
+                consumption_available(entries, pocket.id, m, expenses, transfers)
+                for m in months
+                if not is_month_closed(m)
             )
-    return (distributed_income_total - expense_total) - right
+    return (distributed_income_total - expense_total) - (right + adjustment_total)

@@ -1,23 +1,42 @@
 # Puro Pockets: hoja de ruta por hitos
 
-**Versión:** 0.11 (borrador)
+**Versión:** 0.12 (borrador)
 **Fecha:** 2026-11-09
 **Fuentes de verdad:** reglas en `.specify/memory/constitution.md` (referenciadas como `RN-xx`); técnica en `docs/plan-tecnico.md`.
 **Este documento define:** qué entrega cada hito, en qué orden y cuándo se considera terminado. No repite reglas de negocio ni el esquema de datos: los referencia.
 
 ---
 
-## 1. Cómo se usa este documento con Spec Kit
+## 1. Cómo se trabaja cada hito
 
-Cada hito (menos el 0) se convierte en una carpeta `specs/NNN-nombre/` con su `spec.md`, un `plan.md` delgado y un `tasks.md`.
+Desde el Hito 9 (decisión del propietario, 2026-11-11), cada hito se documenta en una carpeta
+`specs/NNN-nombre/` que Claude escribe directamente siguiendo este documento y la constitución, sin
+ejecutar los comandos de Spec Kit (`/speckit-clarify`, `/speckit-tasks`, `/speckit-analyze`,
+`/speckit-implement`). Las plantillas de `.specify/templates` sirven solo como formato.
 
 ```
 Por cada hito:
-/speckit-specify  →  /speckit-clarify  →  /speckit-plan (delgado)
-     →  /speckit-tasks  →  /speckit-analyze  →  /speckit-implement
+spec.md  →  plan.md delgado (decisiones técnicas, delta de esquema y contrato de tools)
+     →  autorrevisión contra la constitución  →  implementación de una vez
+     →  verificacion.md y reporte final
 ```
 
-- El bloque **"Prompt para /speckit-specify"** de cada hito es el texto de partida para el comando.
+- **Documentos:** `spec.md`, `plan.md` (con todo dentro; sin `research.md`, `data-model.md`,
+  `contracts/` ni `quickstart.md`: si algo concreto lo exige, una sección corta en `plan.md`) y un
+  `progreso.md` corto (lista de comprobación) para retomar si la sesión se interrumpe. Al terminar,
+  `verificacion.md`.
+- **Autorrevisión antes del código:** spec y plan se contrastan con la constitución (las `RN-xx`
+  citadas, las cuatro reglas no negociables y lo [PROPUESTO]); lo que no cuadra se corrige. Si la
+  contradicción está en una capa alta, se detiene el trabajo y se pregunta al propietario.
+- **Implementación de una vez**, sin pedir confirmación, salvo ante una decisión [ABIERTO], una
+  contradicción en una capa alta, una acción destructiva o la necesidad de credenciales.
+- **Siguen obligatorios:** pruebas automáticas del hito (también las negativas), el invariante
+  11.4, migración que conserva datos con downgrade protegido, registros sin montos y los
+  [PROPUESTO] en el reporte.
+- **Contexto:** se leen solo las secciones que el hito cita; durante el trabajo se corren las
+  pruebas del área tocada, y la suite completa (pytest y ruff) una vez al terminar.
+- El bloque **"Prompt para /speckit-specify"** de cada hito sigue siendo el texto de partida de su
+  `spec.md`. Los Hitos 1 a 8 se hicieron con el flujo completo de Spec Kit.
 - La spec dice **qué** entrega el hito y **cómo se comprueba**; las reglas se citan (`RN-52`), nunca se reescriben.
 - Al cerrar cada hito se actualiza `docs/plan-tecnico.md` si cambió el esquema o la arquitectura.
 - Un hito se cierra solo cuando se cumple su **"Terminado cuando"**.
@@ -43,7 +62,7 @@ Las reglas no negociables (datos reales, capa de negocio, invariante de integrid
 | 6 | Extras y gastos fijos | Reparto de extras recomendado por Claude, gastos fijos | RN-04 a 09, 35, 36 |
 | 7 | Bolsas flexibles y metas | Crear y archivar bolsas con reajuste, metas | RN-13 a 25, 28, 29 |
 | 8 | Transferencias | Mover dinero entre bolsas con registro | RN-39 a 44, 58; completa RN-18 |
-| 9 | Cierre de mes | Déficits, sobrantes y cierre atómico | RN-46 a 52 |
+| 9 | Cierre de mes | Déficits, sobrantes, cierre atómico y meses cerrados | RN-44, 46 a 53, 58; 6.5 |
 | 10 | Dashboard | Estadísticas y gráficos | Sección 13 del plan técnico |
 | 11 | Operación y endurecimiento | Respaldos probados, monitoreo, revisión de seguridad | (no funcional) |
 
@@ -246,7 +265,7 @@ El SDK de MCP para Python implementa el lado del **servidor de recursos** de OAu
 - **Gastos:** contra cualquier bolsa, con categoría opcional (RN-31 a 34). Categorías con bolsa por defecto.
 - **Monedas:** colones y dólares; conversión a colones al registrar, con el tipo de cambio indicado por el propietario y guardado en el movimiento (RN-55 a 57, decisión #12). Sin `float`.
 - **Sobregasto:** no se bloquea; se registra y se advierte (RN-37, 38).
-- **Anulación con registro**, solo en mes abierto (todos abiertos hasta el Hito 9) (RN-53, 59). Incluye el saldo inicial, que después puede volver a cargarse (RN-54).
+- **Anulación con registro**, solo en mes abierto (RN-53, 59; el cierre de mes llega en el Hito 9). Incluye el saldo inicial, que después puede volver a cargarse (RN-54).
 - **Cálculos oficiales** de bolsa de consumo y acumulable (sección 11.1 y 11.2).
 - **Tools:** `preview_income`, `add_income`, `add_expense`, `void_transaction`, `get_bolsa_status`, `list_transactions`, `get_summary`, `top_categories`, `create_category`, `list_categories`.
 - **Prueba del invariante de integridad** (sección 11.4), creada en el Hito 4, se extiende a ingresos repartidos, gastos, anulaciones y USD, ejecutada contra datos generados.
@@ -334,7 +353,7 @@ La decisión #11 (una sola meta activa por bolsa) quedó resuelta el 2026-11-11 
 RN-58 quedó decidida el 2026-11-11 (constitución 1.0.4). RN-45 está derogada.
 
 ### Entregables
-- **Tabla `transfers`** (migración `0007_transfers`, que conserva los datos del Hito 7), con nombres en inglés, motivo y nota; inmutable: CHECK, claves foráneas ON DELETE RESTRICT y disparador que rechaza UPDATE y DELETE (RN-39 a 44, principio 3.4). Siempre en colones, con la fecha de hoy y el mes de esa fecha; hasta el Hito 9 todos los meses están abiertos.
+- **Tabla `transfers`** (migración `0007_transfers`, que conserva los datos del Hito 7), con nombres en inglés, motivo y nota; inmutable: CHECK, claves foráneas ON DELETE RESTRICT y disparador que rechaza UPDATE y DELETE (RN-39 a 44, principio 3.4). Siempre en colones, con la fecha de hoy y el mes de esa fecha.
 - **Transferir con vista previa:** `preview_transfer` no guarda nada; `transfer_between_bolsas` con `confirm=true` exige la ficha de la vista previa y guarda en una transacción que bloquea las dos bolsas y vuelve a validar lo disponible (RN-41, RN-42). Referencia `T-n`; `list_transactions` las incluye.
 - **Presupuesto ajustado** frente al original (sección 9.1) en `get_bolsa_status`, `get_summary` y `get_allocation_context`, con una sola función de cálculo; % usado sobre el ajustado y el original como referencia.
 - **Vista previa con aviso del efecto sobre metas** (RN-58); las metas se evalúan en la transacción de la transferencia (RN-24).
@@ -365,13 +384,19 @@ RN-58 quedó decidida el 2026-11-11 (constitución 1.0.4). RN-45 está derogada.
 
 **Objetivo:** el ritual de fin de mes: resolver déficits, decidir el destino de los sobrantes y cerrar.
 
+RN-51 quedó decidida el 2026-11-11 (constitución 1.0.5).
+
 ### Entregables
-- **Tablas:** `month_closures`, `closure_adjustments`.
-- **Vista previa del cierre** (`preview_month_close`) con déficits, sobrantes de consumo, saldos acumulables que podrían cubrir y propuesta de Claude.
-- **Cierre atómico** (`close_month`): cubre déficits primero (con sobrantes y, con confirmación, con saldo acumulable), luego envía sobrantes a las bolsas elegidas o los registra como no destinados (RN-46 a 52).
-- **Bloqueo de meses cerrados:** sin movimientos, transferencias ni anulaciones nuevas (RN-44, 48, 53).
-- **Alerta de cierre pendiente** (RN-49).
-- **Ritual de fin de mes** documentado en un solo flujo (RN-51).
+- **Tablas** (migración `0008_month_closures`, que conserva los datos del Hito 8 y no cierra ningún mes): `month_closures` (mes `YYYY-MM`, estado, instante del cierre) y `closure_adjustments` (sobrante no destinado +, sobregasto no cubierto −), en inglés, con claves foráneas ON DELETE RESTRICT y disparadores que impiden reabrir y borrar; CHECK en `transfers`: mes distinto del de la fecha solo con el motivo `cierre_de_mes`.
+- **Qué mes se cierra:** desde su último día, en orden (también los meses vacíos en medio) y sin extras pendientes; los fijos pendientes solo avisan.
+- **Vista previa del cierre** (`preview_month_close`): sin propuesta, los datos (sobrante o déficit de cada bolsa de consumo, saldo y meta de cada acumulable, destino sugerido); con la propuesta de Claude, el resultado, el efecto en las metas (RN-58), lo no destinado, el sobregasto no cubierto y la ficha. La app no recomienda.
+- **Cierre atómico** (`close_month`): cubre déficits primero (con sobrantes de consumo y, solo si ya están usados y con aprobación explícita, con saldo acumulable), luego envía sobrantes a acumulables o los registra como no destinados (RN-46 a 52); exige la ficha, se recalcula dentro de la transacción con las bolsas bloqueadas y evalúa las metas.
+- **Meses cerrados:** una sola regla (un mes cerrado o anterior al último cerrado) que usan todas las tools de los Hitos 4 a 8: sin gastos, ingresos, extras, repartos, transferencias, anulaciones ni cambios de porcentajes (RN-44, 48, 53). Sin tool para reabrir: una corrección posterior va a un mes abierto.
+- **Alerta de cierre pendiente** (RN-49) en `get_summary` y `list_bolsas`.
+- **Ritual de fin de mes** en las instrucciones del servidor (RN-51): cierre, salario del mes siguiente y porcentajes.
+- **Destino de sobrante sugerido** (6.5) con `set_surplus_destination`.
+- **Invariante** (sección 11.4) con cierres: 200 conjuntos sintéticos; cerrar no cambia la suma total de dinero.
+- **Tools:** `preview_month_close`, `close_month`, `set_surplus_destination`.
 
 ### Prompt para /speckit-specify
 > A fin de mes, el propietario quiere ver los déficits y sobrantes de sus bolsas de consumo, recibir una propuesta de cómo cubrir déficits y a dónde enviar los sobrantes, confirmarla o cambiarla, y cerrar el mes de forma que lo cerrado no pueda modificarse. Las bolsas de consumo empiezan el mes siguiente en cero. Incluye pruebas automáticas que verifiquen los criterios de aceptación.
@@ -381,8 +406,14 @@ RN-58 quedó decidida el 2026-11-11 (constitución 1.0.4). RN-45 está derogada.
 - Un sobrante enviado a una bolsa acumulable aparece en su saldo.
 - Un sobrante sin destino queda como "no destinado" y el invariante sigue cuadrando.
 - Si algo falla a mitad del cierre, no queda nada a medias.
-- Un mes cerrado rechaza gastos y anulaciones.
+- Un mes cerrado rechaza gastos, ingresos, extras, repartos, transferencias y anulaciones, desde las tools y dentro de la transacción; un cierre no se reabre ni se borra, ni siquiera directamente en la base.
 - Las bolsas de consumo del mes siguiente empiezan en cero.
+- Un mes no se cierra antes de su último día, fuera de orden, dos veces ni con extras pendientes.
+- Un déficit sin sobrantes de consumo puede cubrirse desde una acumulable solo con aprobación explícita; si no, queda como sobregasto no cubierto y el mes se cierra igual.
+- Claude no cierra un mes sin mostrarte la vista previa y esperar tu aprobación explícita; si el estado cambió desde la vista previa, se rechaza.
+- Un gasto del mes que llega mientras se cierra no queda dentro de un mes cerrado, y no hay interbloqueos (prueba de concurrencia contra Postgres).
+- La migración conserva los datos del Hito 8 y su downgrade está protegido.
+- La prueba del invariante sigue pasando con cierres.
 
 ---
 
@@ -446,3 +477,4 @@ RN-58 quedó decidida el 2026-11-11 (constitución 1.0.4). RN-45 está derogada.
 | 0.9 | 2026-11-11 | Hito 6: entregables con la migración `0005_extras_recurring` (que conserva los datos del Hito 5), contexto con solo agregados, ficha de vista previa e instrucciones del servidor, gastos fijos con historial de monto y pago con `add_expense`, "sin asignar" en resumen y listado, invariante extendido. Se quita la cuestión de `/speckit-clarify` (decidida por el propietario: gastos fijos bajo demanda). Cuatro criterios más en "Terminado cuando" (aprobación explícita, pago de fijo en USD, migración y downgrade, invariante). |
 | 0.10 | 2026-11-11 | Se quita de la sección 3 la decisión #11 (resuelta; constitución 1.0.3). Hito 7: entregables con la migración `0006_pockets_goals` (conserva los datos del Hito 6), reajuste que escribe el conjunto completo del mes, archivado que redistribuye el mes actual y los futuros, metas evaluadas en cada operación que sube un saldo, metas en el contexto del extra; reglas de la vista general y del entregable de metas ajustadas (RN-26 y 27 derogadas, RN-30 resuelta); cuatro criterios más en "Terminado cuando". Hito 8: pruebas pendientes del archivado de bolsas con saldo. |
 | 0.11 | 2026-11-11 | Hito 8: RN-58 decidida (constitución 1.0.4); vista general sin RN-45 (derogada) y con RN-18 completada; entregables con la migración `0007_transfers` (conserva los datos del Hito 7), tabla inmutable en inglés, vista previa con ficha, bloqueo de las dos bolsas, presupuesto ajustado con una sola función, advertencia de sobregasto con los cálculos nuevos e invariante con transferencias; cuatro criterios más en "Terminado cuando" (concurrencia, inmutabilidad, aprobación explícita, migración y downgrade). |
+| 0.12 | 2026-11-11 | Nuevo flujo de trabajo por hito desde el Hito 9 (sección 1): Claude escribe `spec.md`, un `plan.md` delgado con todo dentro y un `progreso.md`, hace una autorrevisión contra la constitución e implementa de una vez, sin los comandos de Spec Kit (decisión del propietario, 2026-11-11). Hito 9: RN-51 decidida (constitución 1.0.5); vista general con RN-44, 46 a 53, 58 y 6.5; entregables con la migración `0008_month_closures`, la regla única de mes cerrado para todas las tools, la alerta de cierre pendiente, el ritual en las instrucciones del servidor y el destino sugerido; seis criterios más en "Terminado cuando". Se quitan de los Hitos 5 y 8 las frases "todos los meses están abiertos". |

@@ -1,6 +1,6 @@
 # Constitución de Puro Pockets
 
-**Versión:** 1.0.4
+**Versión:** 1.0.5
 **Ratificada:** 2026-11-09
 **Propietario:** Oscar Zúñiga ("TosTar")
 
@@ -286,7 +286,7 @@ Las bolsas de consumo empiezan cada mes en cero, así que el sobrante o déficit
 - **RN-48:** un mes cerrado **no se edita**. Las correcciones se hacen con un ajuste explícito y registrado.
 - **RN-49:** si el mes no se cierra, queda `abierto` y el dashboard muestra una alerta de **cierre pendiente**.
 - **RN-50:** si un déficit no se puede cubrir, se registra como **sobregasto no cubierto** y el mes se cierra igual. Aparece en las estadísticas.
-- **RN-51 [PROPUESTO]:** el cierre del mes que termina ocurre junto con el reparto del nuevo salario, en un único ritual de fin de mes: (1) cerrar el mes, (2) registrar el salario, (3) repartir el mes nuevo con los porcentajes.
+- **RN-51 [DECIDIDO]:** el cierre del mes que termina ocurre junto con el reparto del nuevo salario, en un único ritual de fin de mes: (1) cerrar el mes, (2) registrar el salario, (3) repartir el mes nuevo con los porcentajes. (Decidida el 2026-11-11, Hito 9.)
 - **RN-52 [DECIDIDO]:** un déficit **puede cubrirse con el saldo de una bolsa acumulable** cuando no hay sobrantes suficientes en bolsas de consumo. Requiere confirmación explícita, y la vista previa advierte el efecto sobre la meta de esa bolsa (RN-58).
 
 ### 10.4 Flujo
@@ -441,7 +441,7 @@ su número.
   cambio PATCH.
 - Si una enmienda toca una regla `RN-xx`, se revisan las specs que la citan.
 
-**Versión**: 1.0.4 | **Ratificada**: 2026-11-09 | **Última enmienda**: 2026-11-11
+**Versión**: 1.0.5 | **Ratificada**: 2026-11-09 | **Última enmienda**: 2026-11-11
 
 ---
 
@@ -454,3 +454,4 @@ su número.
 | 1.0.2 | 2026-11-10 | PATCH aprobado por el propietario: se resuelve el punto (d) de la decisión #12 (sección 14.1.1): un pago de gasto fijo en USD exige el tipo de cambio indicado en ese pago; si falta, error, sin asumirlo ni reutilizar el último. No cambia el significado de ninguna regla. |
 | 1.0.3 | 2026-11-11 | PATCH aprobado por el propietario: la decisión #11 (metas por bolsa) pasa a resuelta (sección 14.1.2) y RN-22 pasa de [PROPUESTO] a [DECIDIDO]. RN-24, RN-28 y RN-29 siguen [PROPUESTO]. No cambia el significado de ninguna regla. |
 | 1.0.4 | 2026-11-11 | PATCH aprobado por el propietario: RN-58 (aviso del efecto de una transferencia sobre el avance de la meta) pasa de [PROPUESTO] a [DECIDIDO]. No cambia el significado de ninguna regla. |
+| 1.0.5 | 2026-11-11 | PATCH aprobado por el propietario: RN-51 (el cierre del mes que termina y el reparto del salario nuevo forman un solo ritual de fin de mes) pasa de [PROPUESTO] a [DECIDIDO]. No cambia el significado de ninguna regla. |

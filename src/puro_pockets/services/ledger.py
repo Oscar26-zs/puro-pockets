@@ -36,6 +36,7 @@ from puro_pockets.domain.categories import (
     find_category,
     validate_category_name,
 )
+from puro_pockets.domain.closures import is_closed
 from puro_pockets.domain.errors import (
     AlreadyVoided,
     CategoryAlreadyExists,
@@ -73,7 +74,12 @@ from puro_pockets.domain.pockets import (
 )
 from puro_pockets.domain.recurring import RecurringRef, RecurringTemplate, find_recurring
 from puro_pockets.domain.transfers import TransferRef
-from puro_pockets.services.budget import AllocationLine
+from puro_pockets.services.budget import (
+    AllocationLine,
+    PendingClosureItem,
+    pending_closure_items,
+)
+from puro_pockets.services.closing import ClosingMixin, ClosureAdjustmentItem
 from puro_pockets.services.extras import ExtrasMixin
 from puro_pockets.services.flex import PocketsMixin
 from puro_pockets.services.goals import GoalsMixin
@@ -91,6 +97,7 @@ from puro_pockets.services.ledger_core import (
     unassigned_summary,
 )
 from puro_pockets.services.records import (
+    ClosureAdjustmentRow,
     ExpenseRow,
     IncomeRow,
     LedgerStore,
@@ -219,6 +226,14 @@ class BolsaStatus(BaseModel):
     goal: BolsaGoal | None = Field(
         default=None, description="Acumulable: su meta activa, si la tiene (Hito 7)."
     )
+    month_closed: bool = Field(
+        default=False, description="True si el mes está cerrado (no admite movimientos)."
+    )
+    closure_adjustment: ClosureAdjustmentItem | None = Field(
+        default=None,
+        description="Mes cerrado: sobrante no destinado (+) o sobregasto no cubierto (−) de la "
+        "bolsa en ese cierre (RN-50).",
+    )
 
 
 class SummaryPocket(BaseModel):
@@ -246,6 +261,18 @@ class SummaryPocket(BaseModel):
 
 class SummaryResult(BaseModel):
     month: str
+    month_closed: bool = Field(
+        default=False, description="True si el mes está cerrado (no admite movimientos)."
+    )
+    closure_adjustments: list[ClosureAdjustmentItem] = Field(
+        default_factory=list,
+        description="Mes cerrado: sobrantes no destinados y sobregastos no cubiertos (RN-50).",
+    )
+    pending_closure: list[PendingClosureItem] = Field(
+        default_factory=list,
+        description="RN-49: meses terminados sin cerrar, en orden. Si hay alguno, propón el ritual "
+        "de fin de mes empezando por preview_month_close.",
+    )
     income_total: int = Field(
         description="Ingresos repartidos del mes (base + extras repartidos); el saldo inicial no "
         "cuenta."
@@ -380,9 +407,11 @@ def _raw_rate(value: object) -> int | str | None:
     return value.strip() if isinstance(value, str) else value
 
 
-class LedgerService(ExtrasMixin, RecurringMixin, PocketsMixin, GoalsMixin, TransfersMixin):
+class LedgerService(
+    ExtrasMixin, RecurringMixin, PocketsMixin, GoalsMixin, TransfersMixin, ClosingMixin
+):
     """Casos de uso de movimientos. Extras y gastos fijos (Hito 6), bolsas flexibles y metas
-    (Hito 7) y transferencias (Hito 8) viven en mixins."""
+    (Hito 7), transferencias (Hito 8) y cierre de mes (Hito 9) viven en mixins."""
 
     # --- Ingreso base (constitución 5.1; RN-02, RN-03, RN-08, RN-55 a 57) ---
 
@@ -409,6 +438,7 @@ class LedgerService(ExtrasMixin, RecurringMixin, PocketsMixin, GoalsMixin, Trans
         return _IncomeDraft(day, month, money, payload)
 
     def _income_preview(self, draft: _IncomeDraft) -> tuple[IncomeResult, list[AllocationLine]]:
+        self._ensure_open(draft.budget_month)  # RN-44, RN-48: ingresos por mes presupuestario
         pockets = self._store.list_pockets()
         source = pick_source_month(
             draft.budget_month, self._store.allocation_months(draft.budget_month)
@@ -619,6 +649,7 @@ class LedgerService(ExtrasMixin, RecurringMixin, PocketsMixin, GoalsMixin, Trans
         pockets = self._store.list_pockets()
         day = movement_date(request.expense_date, "del gasto", self._today())
         month = Month.of(day)
+        self._ensure_open(month)  # RN-44, RN-48: gastos por mes calendario
         template = None
         if not _blank(request.recurring):
             template = find_recurring(self._store.list_recurring(), request.recurring)
@@ -774,6 +805,7 @@ class LedgerService(ExtrasMixin, RecurringMixin, PocketsMixin, GoalsMixin, Trans
                     f"pendiente en {expense.month}."
                 )
 
+        self._ensure_open(month)  # RN-53: solo se anula en un mes abierto
         if negatives:
             names = ", ".join(n.pocket for n in negatives)
             notes.append(f"Al anularlo, estas bolsas quedan en negativo: {names} (RN-59, RN-37).")
@@ -873,7 +905,18 @@ class LedgerService(ExtrasMixin, RecurringMixin, PocketsMixin, GoalsMixin, Trans
     def _bolsa_status(self, pocket: object, month: Month) -> BolsaStatus:
         target = find_pocket(self._store.list_pockets(), pocket)
         figures = self._data().figures(target, month)
+        closed = is_closed(month, self._store.closure_state().closed)
+        adjustment = next(
+            (
+                self._adjustment_item(row, {target.id: target.name})
+                for row in (self._store.closure_adjustments(month) if closed else [])
+                if row.pocket_id == target.id
+            ),
+            None,
+        )
         return BolsaStatus(
+            month_closed=closed,
+            closure_adjustment=adjustment,
             pocket=target.name,
             behavior=target.behavior.value,
             month=str(month),
@@ -925,8 +968,17 @@ class LedgerService(ExtrasMixin, RecurringMixin, PocketsMixin, GoalsMixin, Trans
         target_month = self._month(month)
         return await self._run(partial(self._summary, target_month))
 
+    @staticmethod
+    def _adjustment_item(row: ClosureAdjustmentRow, names: dict[int, str]) -> ClosureAdjustmentItem:
+        return ClosureAdjustmentItem(pocket=names[row.pocket_id], kind=row.kind, amount=row.amount)
+
     def _summary(self, month: Month) -> SummaryResult:
-        pockets = ordered_active(self._store.list_pockets())
+        everything = self._store.list_pockets()
+        names = {p.id: p.name for p in everything}
+        pockets = ordered_active(everything)
+        state = self._store.closure_state()
+        closed = is_closed(month, state.closed)
+        adjustments = self._store.closure_adjustments(month) if closed else []
         data = self._data()
         lines = [self._pocket_line(data.figures(p, month)) for p in pockets]
         extras = self._store.extra_income_total(month)
@@ -938,6 +990,9 @@ class LedgerService(ExtrasMixin, RecurringMixin, PocketsMixin, GoalsMixin, Trans
             expense_total=sum(e.amount for e in data.expenses if e.month == month),
             pockets=lines,
             negative_pockets=[line.pocket for line in lines if line.negative],
+            month_closed=closed,
+            closure_adjustments=[self._adjustment_item(r, names) for r in adjustments],
+            pending_closure=pending_closure_items(self._today(), state),
         )
 
     async def top_categories(

@@ -17,6 +17,7 @@ from puro_pockets.config import Settings
 from puro_pockets.domain.auth import LoginRateLimiter
 from puro_pockets.mcp.audit import OAuthAuditMiddleware
 from puro_pockets.mcp.budget_tools import register_budget_tools
+from puro_pockets.mcp.closing_tools import register_closing_tools
 from puro_pockets.mcp.extras_tools import register_extras_tools
 from puro_pockets.mcp.ledger_tools import register_ledger_tools
 from puro_pockets.mcp.login import build_login_handler
@@ -100,6 +101,28 @@ mismo flujo. No se mueve más de lo disponible en el origen.
 Metas: una meta no tiene dinero propio; su avance es el saldo de su bolsa acumulable. Con
 get_goal_progress puedes estimar una fecha (si projectable es true) y sugerir qué hacer con un
 excedente, siempre como sugerencia y con confirmación del propietario.
+
+Ritual de fin de mes (RN-51): cierre del mes que termina y salario del mes nuevo, en un solo flujo.
+Si get_summary o list_bolsas traen pending_closure, propónlo empezando por el mes más antiguo.
+1. preview_month_close (sin propuesta): sobrante o déficit de cada bolsa de consumo, saldo y meta
+   de cada acumulable, extras pendientes (bloquean: repártelos o anúlalos antes) y fijos pendientes
+   (solo aviso), y el destino de sobrante sugerido de cada bolsa.
+2. Propón covers (cubrir déficits) y destinations (enviar sobrantes a una acumulable o dejarlos
+   como no destinados) con una explicación breve basada en esos datos. Orden fijo: primero se
+   cubren los déficits con sobrantes de consumo; solo si ya están usados puede proponerse cubrir
+   desde el saldo de una acumulable (pregunta por ella aparte: es opcional, y si el propietario no
+   la acepta, lo no cubierto queda como sobregasto no cubierto).
+3. preview_month_close con covers y destinations: muestra cómo queda cada bolsa, el efecto en las
+   metas, lo no destinado, el sobregasto no cubierto y el aviso de que el mes no admitirá más
+   movimientos, ni siquiera los de hoy.
+4. Espera la aprobación explícita del propietario. Una respuesta ambigua no es aprobación.
+5. Solo entonces close_month con confirm=true, el preview_token y un operation_id.
+6. Después, el salario del mes siguiente (preview_income y add_income, con su aprobación) y, si
+   cambian, los porcentajes del mes nuevo (set_allocation).
+Un mes cerrado no admite gastos, ingresos, extras, repartos, transferencias ni anulaciones, y un
+cierre no se reabre: una corrección posterior es una transferencia (motivo ajuste) o un movimiento
+nuevo en un mes abierto. confirm=true no garantiza por sí solo que hayas preguntado: la aprobación
+del propietario es tu responsabilidad.
 """
 
 
@@ -178,6 +201,8 @@ def build_server(
         register_pockets_tools(server, ledger)
         # Transferencias entre bolsas (Hito 8), también detrás del token
         register_transfers_tools(server, ledger)
+        # Cierre de mes (Hito 9), también detrás del token
+        register_closing_tools(server, ledger)
 
     return server
 

@@ -1,4 +1,9 @@
-"""Almacén SQL del presupuesto (SQLAlchemy Core). Tablas de las migraciones 0003 a 0007.
+"""Almacén SQL del presupuesto (SQLAlchemy Core). Tablas de las migraciones 0003 a 0008.
+
+Guardia de meses cerrados (Hito 9): toda escritura que toca un mes llama a `_guard_months` dentro
+de su transacción, antes de bloquear o escribir nada. Toma el bloqueo consultivo de cierres en modo
+compartido (las escrituras siguen en paralelo entre sí; `close_month` lo toma exclusivo) y decide
+con `domain.closures.check_open`, la única regla de "mes cerrado".
 
 Las lecturas de movimientos ignoran lo anulado (RN-53). Las escrituras del Hito 5 (ingresos base,
 gastos, anulaciones) están en `ledger_store.py`.
@@ -6,7 +11,7 @@ gastos, anulaciones) están en `ledger_store.py`.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 
 from sqlalchemy import (
@@ -26,6 +31,7 @@ from sqlalchemy import (
     func,
     insert,
     select,
+    union,
     update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -37,6 +43,7 @@ from puro_pockets.domain.balances import (
     IncomeKind,
     TransferEntry,
 )
+from puro_pockets.domain.closures import ClosedMonths, ClosureState, check_open
 from puro_pockets.domain.errors import InitialBalanceAlreadyLoaded
 from puro_pockets.domain.goals import Goal, GoalStatus, balance_function, reached
 from puro_pockets.domain.money import Currency
@@ -181,6 +188,28 @@ transfers = Table(
     Column("note", Text),
 )
 
+month_closures = Table(
+    "month_closures",
+    metadata,
+    Column("month", CHAR(7), primary_key=True),
+    Column("status", Text, nullable=False),
+    Column("closed_at", DateTime(timezone=True)),
+)
+
+closure_adjustments = Table(
+    "closure_adjustments",
+    metadata,
+    Column("id", BigInteger, primary_key=True),
+    Column("month", CHAR(7), nullable=False),
+    Column("pocket_id", BigInteger, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("amount", BigInteger, nullable=False),
+)
+
+# Bloqueo consultivo de cierres: pg_advisory_xact_lock(CLOSURE_LOCK_NS, 0). Compartido en cada
+# escritura que toca un mes; exclusivo en close_month (Hito 9).
+CLOSURE_LOCK_NS = 0x5050  # "PP"
+
 INITIAL_BALANCE_INDEX = "ux_incomes_single_initial_balance"
 LIVE_INCOME = (incomes.c.allocation_status == "repartido") & incomes.c.voided.is_(False)
 LIVE_EXPENSE = expenses.c.voided.is_(False)
@@ -222,9 +251,48 @@ class SqlBudgetStore:
             ).all()
         return {r.pocket_id: r.percentage for r in rows}
 
+    # --- Meses cerrados (Hito 9) ---
+
+    @staticmethod
+    def _read_closed(conn: Connection) -> ClosedMonths:
+        rows = conn.execute(
+            select(month_closures.c.month).where(month_closures.c.status == "cerrado")
+        ).scalars()
+        return ClosedMonths(frozenset(Month.parse(m) for m in rows))
+
+    @staticmethod
+    def _read_movement_months(conn: Connection) -> frozenset[Month]:
+        """Meses con movimientos (PROPUESTO 3): ingresos de cualquier tipo o estado por mes
+        presupuestario, gastos (también anulados) por mes calendario y transferencias."""
+        rows = conn.execute(
+            union(
+                select(incomes.c.budget_month.label("m")),
+                select(expenses.c.month.label("m")),
+                select(transfers.c.month.label("m")),
+            )
+        ).scalars()
+        return frozenset(Month.parse(m) for m in rows)
+
+    def closure_state(self) -> ClosureState:
+        with self._engine.connect() as conn:
+            return ClosureState(self._read_closed(conn), self._read_movement_months(conn))
+
+    @staticmethod
+    def _guard_months(conn: Connection, months: Iterable[Month]) -> None:
+        """Dentro de una transacción de escritura: espera a un cierre en curso y rechaza los meses
+        cerrados (RN-44, RN-48, RN-53). Debe ser lo primero que hace la transacción."""
+        wanted = sorted(set(months))
+        if not wanted:
+            return
+        conn.execute(select(func.pg_advisory_xact_lock_shared(CLOSURE_LOCK_NS, 0)))
+        closed = SqlBudgetStore._read_closed(conn)
+        for month in wanted:
+            check_open(month, closed)
+
     def replace_allocation(self, month: Month, rows: Mapping[int, int]) -> None:
         """Reemplaza solo las filas de ese mes, en una transacción (RN-02)."""
         with self._engine.begin() as conn:
+            self._guard_months(conn, [month])
             conn.execute(
                 delete(budget_month_allocations).where(
                     budget_month_allocations.c.month == str(month)
@@ -262,6 +330,7 @@ class SqlBudgetStore:
         total = sum(line.amount for line in lines)
         try:
             with self._engine.begin() as conn:
+                self._guard_months(conn, [budget_month])
                 income_id = conn.execute(
                     insert(incomes)
                     .values(

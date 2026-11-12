@@ -114,7 +114,8 @@ def reset_budget(engine: Engine, expected_name: str, pockets=SEED_POCKETS) -> No
     with engine.begin() as conn:
         conn.execute(
             text(
-                "TRUNCATE idempotency_keys, transfers, savings_goals, expenses, "
+                "TRUNCATE idempotency_keys, closure_adjustments, month_closures, transfers, "
+                "savings_goals, expenses, "
                 "recurring_expense_amounts, "
                 "recurring_expenses, income_allocations, incomes, "
                 "budget_month_allocations, categories, pockets RESTART IDENTITY CASCADE"

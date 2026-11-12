@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from puro_pockets.domain.allocation import pick_source_month, resolve_allocation
 from puro_pockets.domain.balances import PocketFigures
+from puro_pockets.domain.closures import first_open, is_closed
 from puro_pockets.domain.errors import (
     DomainError,
     PocketAlreadyExists,
@@ -154,6 +155,19 @@ class PocketsMixin(LedgerCore):
             )
         return target
 
+    def _open_target(self, month: Month) -> tuple[Month, str | None]:
+        """P4: si el mes pedido ya está cerrado (cierre hecho en su último día), aplica desde el
+        primer mes abierto y lo dice. Decide la regla única de `domain.closures`."""
+        closed = self._store.closure_state().closed
+        if not is_closed(month, closed):
+            return month, None
+        opened = first_open(self._today(), closed)
+        if opened < month:  # pragma: no cover - un mes futuro nunca está cerrado
+            opened = month
+        while is_closed(opened, closed):  # pragma: no cover - defensivo
+            opened = opened.next()
+        return opened, f"El mes {month} ya está cerrado: aplica desde {opened}."
+
     @staticmethod
     def _manual_map(
         pairs: list[tuple[str, int]], active: list[Pocket], new_name: str | None
@@ -200,6 +214,7 @@ class PocketsMixin(LedgerCore):
         month: Month,
     ) -> tuple[RebalanceResult, dict[int, int], int]:
         pockets = self._store.list_pockets()
+        month, closed_note = self._open_target(month)
         if any(normalize_name(p.name) == normalize_name(name) for p in pockets):
             raise PocketAlreadyExists()
         active = ordered_active(pockets)
@@ -223,6 +238,8 @@ class PocketsMixin(LedgerCore):
             f"Aplica desde {month}. Los repartos ya guardados no cambian (cada uno guarda el "
             "porcentaje que usó)."
         )
+        if closed_note:
+            note = f"{closed_note} {note}"
         if later:
             note += (
                 " Estos meses ya tienen porcentajes propios y la bolsa nueva quedará en 0 % en "
@@ -248,7 +265,7 @@ class PocketsMixin(LedgerCore):
         rest = [p for p in active if p.id != pocket.id]
         to = None if _blank(receiver) else find_pocket(rest, receiver)
         manual = self._manual_map(percentages, rest, None) if strategy is Strategy.MANUAL else None
-        current = Month.of(self._today())
+        current, closed_note = self._open_target(Month.of(self._today()))
         months = [current, *self._store.future_allocation_months(current)]
         plan: dict[Month, dict[int, int]] = {}
         shown = []
@@ -263,7 +280,8 @@ class PocketsMixin(LedgerCore):
             action="archivar",
             strategy=strategy.value,
             months=shown,
-            note="Archivar es inmediato: los porcentajes del mes actual y de cada mes futuro con "
+            note=(f"{closed_note} " if closed_note else "")
+            + "Archivar es inmediato: los porcentajes del mes actual y de cada mes futuro con "
             "porcentajes propios quedan sin la bolsa. Los meses pasados no cambian.",
         )
         return result, plan
@@ -412,6 +430,7 @@ class PocketsMixin(LedgerCore):
         if not isinstance(token, str) or token.strip() != expected:
             raise PreviewRequired()
         result = preview.model_copy(update={"saved": True, "preview_token": None})
+        month = Month.parse(rebalance.months[0].month)  # P4: el mes efectivo (abierto)
         new = NewPocket(name, kind, group, month, existing, new_share)
         try:
             response = self._store.create_pocket(
@@ -467,7 +486,7 @@ class PocketsMixin(LedgerCore):
                 return ArchivePocketResult.model_validate(replay)
         pockets = self._store.list_pockets()
         pocket = find_pocket(pockets, name)
-        current = Month.of(self._today())
+        current, _ = self._open_target(Month.of(self._today()))  # P4: primer mes abierto
         _require_empty(self._data().figures(pocket, current))
         rebalance, months = self._plan_archive(pocket, plan, to_pocket, pairs)
         goals = [

@@ -24,6 +24,7 @@ from puro_pockets.domain.balances import (
     TransferEntry,
     pocket_figures,
 )
+from puro_pockets.domain.closures import check_open
 from puro_pockets.domain.errors import DomainError, IdempotencyConflict
 from puro_pockets.domain.money import Currency, RateRange, format_original
 from puro_pockets.domain.months import Month
@@ -131,6 +132,13 @@ class LedgerCore:
         if month is None or (isinstance(month, str) and not month.strip()):
             return Month.of(self._today())
         return Month.parse(month)
+
+    def _ensure_open(self, *months: Month) -> None:
+        """Falla temprano si un mes está cerrado (RN-44, RN-48, RN-53). Decide la única regla,
+        `domain.closures.check_open`; el almacén la vuelve a aplicar dentro de la transacción."""
+        closed = self._store.closure_state().closed
+        for month in months:
+            check_open(month, closed)
 
     def _pending_recurring(self, month: Month) -> list[PendingRecurring]:
         """RN-35/RN-36: fijos activos sin pago vigente en el mes (lista y contexto de extras)."""

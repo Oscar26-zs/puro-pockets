@@ -480,7 +480,7 @@ sesión del Hito 3.
 | `preview_income` | Vista previa del salario: mes presupuestario y reparto por bolsa (no guarda nada). |
 | `add_income` | Registra el salario y lo reparte con los porcentajes del mes siguiente a su fecha (u otro mes indicado); exige `confirm=true` y `operation_id`. |
 | `add_expense` | Registra un gasto contra cualquier bolsa; si la deja en negativo, se guarda y avisa. |
-| `void_transaction` | Anula un ingreso o gasto con motivo (sin borrarlo); exige `confirm=true` para anular. |
+| `void_transaction` | Anula un ingreso o gasto con motivo (sin borrarlo), solo si su mes está abierto; exige `confirm=true` para anular. |
 | `get_bolsa_status` | Asignado, gastado, disponible y % usado (consumo) o saldo (acumulable) de una bolsa. |
 | `get_summary` | Resumen del mes: ingresos (sin saldo inicial), gastos y estado de cada bolsa. |
 | `top_categories` | En qué categorías gastas más en el mes. |
@@ -555,7 +555,7 @@ sesión del Hito 3.
 | `transfer_between_bolsas` | Mueve colones entre bolsas (vista previa, luego `confirm=true` con la ficha). Referencia `T-n`. |
 
 - **Siempre en colones y con la fecha de hoy.** Motivos: `cubrir_sobregasto`, `reasignacion` o
-  `ajuste` (`cierre_de_mes` queda para el Hito 9). Nota opcional de hasta 140 caracteres.
+  `ajuste` (`cierre_de_mes` solo lo usa el cierre de mes). Nota opcional de hasta 140 caracteres.
 - **No se mueve más de lo disponible** en el origen: el saldo si es acumulable, el disponible del
   mes si es de consumo. Desde una bolsa en negativo no se transfiere.
 - **No se editan ni se borran.** Un error se corrige con otra transferencia en sentido contrario.
@@ -567,6 +567,38 @@ sesión del Hito 3.
 - **Migración `0007_transfers`:** conserva tus datos del Hito 7. Haz un
   [respaldo](#respaldo-manual-de-la-base) antes de aplicarla. Su downgrade se niega si hay
   transferencias, salvo con `ALLOW_DESTRUCTIVE_DOWNGRADE=true` (solo en desarrollo).
+
+## Cierre de mes (Hito 9)
+
+| Tool | Qué hace |
+|---|---|
+| `preview_month_close` | Sin propuesta: sobrante o déficit de cada bolsa de consumo, saldo y meta de cada acumulable, extras y fijos pendientes. Con propuesta: cómo queda todo y la ficha (no guarda nada). |
+| `close_month` | Cierra el mes en una sola operación (vista previa, luego `confirm=true` con la ficha). |
+| `set_surplus_destination` | Guarda (o quita) la acumulable sugerida para el sobrante de una bolsa de consumo. |
+
+- **Ritual de fin de mes:** cuando `get_summary` o `list_bolsas` avisan de un cierre pendiente,
+  Claude te muestra la vista previa, te propone cómo cubrir los déficits y a dónde mandar los
+  sobrantes, espera tu aprobación explícita, cierra el mes y después registra el salario del mes
+  siguiente (y los porcentajes, si cambian).
+- **Cuándo y en qué orden:** un mes se cierra desde su último día, siempre en orden (no se cierra uno
+  sin haber cerrado el anterior, aunque esté vacío) y sin extras pendientes (repártelos o anúlalos
+  antes). Los gastos fijos pendientes solo avisan.
+- **Primero los déficits:** se cubren con los sobrantes de las bolsas de consumo; solo si ya están
+  usados puede cubrirse desde el saldo de una acumulable, y eso es opcional. Lo que no se cubre queda
+  como "sobregasto no cubierto"; lo que no se destina, como "sobrante no destinado". Las dos cosas se
+  ven en la vista previa, en la respuesta y en `get_summary` del mes.
+- **Un mes cerrado no se toca:** rechaza gastos, ingresos, extras, repartos, transferencias y
+  anulaciones de ese mes (y de los anteriores), incluidos los de hoy si se cerró hoy. El salario del
+  último día es del mes siguiente, así que se registra sin problema.
+- **No se reabre:** no hay tool para reabrir ni borrar un cierre, y la base lo impide. Si después
+  descubres un error de un mes cerrado, corrígelo en un mes abierto: con una transferencia (motivo
+  `ajuste`) entre las bolsas afectadas o con un movimiento nuevo (por ejemplo, el gasto olvidado con
+  la fecha de hoy).
+- **Las bolsas de consumo empiezan cada mes en cero** más lo que reciban.
+- **Migración `0008_month_closures`:** conserva tus datos del Hito 8 y no cierra ningún mes. Haz un
+  [respaldo](#respaldo-manual-de-la-base) antes de aplicarla. Se niega a aplicar si alguna
+  transferencia tiene un mes distinto del de su fecha. Su downgrade se niega si hay meses cerrados,
+  salvo con `ALLOW_DESTRUCTIVE_DOWNGRADE=true` (solo en desarrollo).
 
 ## Estructura
 

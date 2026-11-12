@@ -2,8 +2,9 @@
 
 Una transferencia mueve colones de una bolsa a otra y queda en un registro que nunca se edita ni se
 borra (RN-43): un error se corrige con otra transferencia en sentido contrario. Siempre en colones,
-sin moneda ni tipo de cambio. La fecha es hoy (America/Costa_Rica) y el mes es el de esa fecha;
-hasta el Hito 9 todos los meses están abiertos (RN-44 se completa allí).
+sin moneda ni tipo de cambio. La fecha es hoy (America/Costa_Rica) y el mes es el de esa fecha; un
+mes cerrado no admite transferencias (RN-44, regla única de `closures.is_closed`). Las del cierre
+(`cierre_de_mes`) llevan el mes cerrado y solo las crea `close_month`.
 
 Las cifras de cada bolsa salen de `balances.pocket_figures` (la misma función de las consultas):
 lo disponible para mover (RN-42) es el saldo de una acumulable o el disponible del mes de una de
@@ -34,7 +35,7 @@ _REF = re.compile(r"^\s*[Tt]\s*-\s*([0-9]{1,18})\s*$")
 
 
 class TransferReason(StrEnum):
-    """Motivos permitidos (sección 9). `cierre_de_mes` lo usa solo el cierre del Hito 9."""
+    """Motivos permitidos (sección 9). `cierre_de_mes` lo usa solo el cierre de mes."""
 
     COVER_OVERSPEND = "cubrir_sobregasto"
     REASSIGNMENT = "reasignacion"
@@ -69,12 +70,12 @@ class TransferRef:
 
 
 def parse_reason(value: object) -> TransferReason:
-    """Motivo de una transferencia pedida por la tool; `cierre_de_mes` queda para el Hito 9."""
+    """Motivo de una transferencia pedida por la tool; `cierre_de_mes` es solo de `close_month`."""
     text = value.strip().casefold() if isinstance(value, str) else ""
     if text == TransferReason.MONTH_CLOSE.value:
         raise DomainError(
-            "El motivo 'cierre_de_mes' está reservado para el cierre de mes (Hito 9). Usa "
-            "cubrir_sobregasto, reasignacion o ajuste."
+            "El motivo 'cierre_de_mes' está reservado para el cierre de mes (lo registra "
+            "close_month). Usa cubrir_sobregasto, reasignacion o ajuste."
         )
     for reason in TOOL_REASONS:
         if text == reason.value:

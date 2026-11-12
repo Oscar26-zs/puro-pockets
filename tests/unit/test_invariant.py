@@ -4,8 +4,9 @@ Gobernanza, regla no negociable 3. Desde el Hito 5 cubre salarios en CRC y USD, 
 y anulaciones (incluido el saldo inicial y su nueva carga); desde el Hito 6, extras pendientes
 (fuera), repartidos (dentro) y anulados (revierten), y pagos de gastos fijos; desde el Hito 7,
 bolsas nuevas, metas y archivados; desde el Hito 8, transferencias (válidas, rechazadas y para
-vaciar una bolsa antes de archivarla). La versión contra Postgres está en
-tests/integration/test_invariant_sql.py.
+vaciar una bolsa antes de archivarla); desde el Hito 9, cierres de mes (déficits cubiertos y no
+cubiertos, coberturas desde acumulable, sobrantes destinados y no destinados). La versión contra
+Postgres está en tests/integration/test_invariant_sql.py.
 """
 
 import pytest
@@ -18,6 +19,7 @@ from puro_pockets.domain.balances import (
     integrity_gap,
     pocket_figures,
 )
+from puro_pockets.domain.closures import is_closed
 from puro_pockets.domain.goals import progress
 from puro_pockets.domain.months import Month
 from puro_pockets.domain.pockets import Behavior, Pocket
@@ -25,6 +27,7 @@ from tests.fakes import InMemoryLedgerStore
 from tests.synthetic import (
     DATASETS,
     apply,
+    apply_closures,
     apply_money,
     apply_structure,
     apply_transfers,
@@ -216,3 +219,58 @@ async def test_transferencias_no_crean_ni_destruyen_dinero():
         rejected += counts["rejected"]
         archived += counts["archived"]
     assert saved > 200 and rejected > 60 and archived > 40
+
+
+def _closed_gap(store):
+    """11.4 con cierres: disponibles solo de meses abiertos (regla única `is_closed`) + ajustes."""
+    closed = store.closure_state().closed
+    return integrity_gap(
+        store.distributed_income_total(),
+        store.expense_total(),
+        store.list_pockets(),
+        store.allocation_entries(),
+        store.expense_entries(),
+        store.transfer_entries(),
+        lambda month: is_closed(month, closed),
+        sum(a.amount for a in store.closure_adjustments(None)),
+    )
+
+
+async def test_cierres_no_crean_ni_destruyen_dinero():
+    """Hito 9 (11.4, RN-46, RN-50): con 200 conjuntos que mezclan ingresos, gastos, anulaciones,
+    metas, transferencias y cierres, cerrar no cambia la suma total de dinero, el invariante con
+    meses abiertos y ajustes cuadra, y el disponible de cada mes cerrado es exactamente la suma de
+    sus ajustes."""
+    totals = dict.fromkeys(
+        ("closed", "from_balance", "uncovered", "destined", "unassigned", "rejected"), 0
+    )
+    for dataset in datasets():
+        pockets = [Pocket(i + 1, n, b) for i, (n, b) in enumerate(dataset.pockets)]
+        store = InMemoryLedgerStore(pockets)
+        await apply(store, dataset)
+        voided_extras_before = store.distributed_income_total()
+        before = _total(_snapshot(store))
+        counts = await apply_closures(store, dataset)
+        message = f"semilla={dataset.seed}"
+        # Anular extras pendientes no cambia saldos (no estaban repartidos)
+        assert store.distributed_income_total() == voided_extras_before, message
+        assert _total(_snapshot(store)) == before, message
+        assert _closed_gap(store) == 0, message
+        closed = store.closure_state().closed
+        entries, expenses = store.allocation_entries(), store.expense_entries()
+        moved = store.transfer_entries()
+        for month in sorted(closed.months):
+            for pocket in store.list_pockets():
+                if pocket.behavior is Behavior.ACUMULABLE:
+                    continue
+                left = consumption_available(entries, pocket.id, month, expenses, moved)
+                adjusted = sum(
+                    a.amount for a in store.closure_adjustments(month) if a.pocket_id == pocket.id
+                )
+                assert left == adjusted, message
+        for key, value in counts.items():
+            totals[key] += value
+    assert totals["closed"] > 200, totals
+    assert totals["from_balance"] > 10 and totals["uncovered"] > 10, totals
+    assert totals["destined"] > 50 and totals["unassigned"] > 50, totals
+    assert totals["rejected"] > 50, totals

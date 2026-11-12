@@ -3,6 +3,11 @@ extras pendientes y su reparto, gastos fijos y sus pagos (Hito 6); bolsas nuevas
 reajuste de porcentajes, y metas (Hito 7); transferencias entre bolsas (Hito 8). Toda operación que
 sube un saldo evalúa las metas en su transacción (`_settle_goals`, RN-24).
 
+Toda escritura que toca un mes llama primero a `_guard_months` (Hito 9): espera a un cierre en
+curso y rechaza los meses cerrados con la única regla de `domain.closures`. `record_closure` toma el
+bloqueo de cierres en exclusivo y después bloquea las bolsas: el orden "guardia, bolsas, filas" es
+el mismo en todas las rutas, así no hay interbloqueos.
+
 Las transferencias y el archivado bloquean las bolsas que tocan (`SELECT … FOR UPDATE`, en orden de
 id) y vuelven a validar dentro de la transacción: dos transferencias simultáneas no sobregiran el
 origen (RN-42) y una bolsa no queda archivada con dinero (RN-18).
@@ -22,17 +27,20 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
 from puro_pockets.db.budget_store import (
+    CLOSURE_LOCK_NS,
     LIVE_EXPENSE,
     LIVE_INCOME,
     SqlBudgetStore,
     budget_month_allocations,
     categories,
+    closure_adjustments,
     constraint_name,
     expenses,
     idempotency_keys,
     income_allocations,
     incomes,
     insert_lines,
+    month_closures,
     pockets,
     recurring_expense_amounts,
     recurring_expenses,
@@ -41,6 +49,7 @@ from puro_pockets.db.budget_store import (
 )
 from puro_pockets.domain.balances import AllocationEntry, ExpenseEntry, IncomeKind
 from puro_pockets.domain.categories import Category
+from puro_pockets.domain.closures import ClosureState
 from puro_pockets.domain.errors import (
     AlreadyVoided,
     CategoryAlreadyExists,
@@ -61,6 +70,9 @@ from puro_pockets.domain.recurring import RecurringRef, RecurringTemplate
 from puro_pockets.domain.transfers import TransferReason
 from puro_pockets.services.budget import AllocationLine
 from puro_pockets.services.records import (
+    ClosureAdjustmentRow,
+    ClosureSnapshot,
+    ClosureWrite,
     ExpenseRow,
     GoalChange,
     IncomeRow,
@@ -196,6 +208,7 @@ class SqlLedgerStore(SqlBudgetStore):
         respond: Callable[[int], dict],
     ) -> dict:
         def work(conn: Connection) -> dict:
+            self._guard_months(conn, [income.budget_month])
             money = income.money
             income_id = conn.execute(
                 insert(incomes)
@@ -230,6 +243,11 @@ class SqlLedgerStore(SqlBudgetStore):
         ref = str(MovementRef(MovementKind.INCOME, income_id))
 
         def work(conn: Connection) -> dict:
+            month = conn.execute(
+                select(incomes.c.budget_month).where(incomes.c.id == income_id)
+            ).scalar()
+            if month is not None:
+                self._guard_months(conn, [Month.parse(month)])
             # Pasa de pendiente a repartido una sola vez: dos confirmaciones simultáneas con claves
             # distintas no reparten dos veces (la segunda ya no encuentra la fila pendiente)
             changed = conn.execute(
@@ -259,6 +277,7 @@ class SqlLedgerStore(SqlBudgetStore):
         self, expense: NewExpense, operation: Operation, respond: Callable[[int], dict]
     ) -> dict:
         def work(conn: Connection) -> dict:
+            self._guard_months(conn, [expense.month])
             money = expense.money
             expense_id = conn.execute(
                 insert(expenses)
@@ -297,8 +316,12 @@ class SqlLedgerStore(SqlBudgetStore):
         on: date | None = None,
     ) -> None:
         table = incomes if ref.kind is MovementKind.INCOME else expenses
+        month_column = incomes.c.budget_month if table is incomes else expenses.c.month
 
         def work(conn: Connection) -> dict:
+            month = conn.execute(select(month_column).where(table.c.id == ref.number)).scalar()
+            if month is not None:  # RN-53: solo se anula en un mes abierto
+                self._guard_months(conn, [Month.parse(month)])
             changed = conn.execute(
                 update(table)
                 .where((table.c.id == ref.number) & table.c.voided.is_(False))
@@ -599,6 +622,7 @@ class SqlLedgerStore(SqlBudgetStore):
         self, new: NewPocket, operation: Operation, respond: Callable[[int], dict]
     ) -> dict:
         def work(conn: Connection) -> dict:
+            self._guard_months(conn, [new.month])
             pocket_id = conn.execute(
                 insert(pockets)
                 .values(name=new.name, behavior=new.behavior.value, group_name=new.group)
@@ -624,6 +648,7 @@ class SqlLedgerStore(SqlBudgetStore):
         verify: Callable[[LedgerSnapshot], None] | None = None,
     ) -> dict:
         def work(conn: Connection) -> dict:
+            self._guard_months(conn, months)
             snapshot = self._lock_and_read(conn, [pocket_id])
             if verify is not None:
                 verify(snapshot)  # RN-18 con lo que hay ahora, con la bolsa bloqueada
@@ -631,6 +656,12 @@ class SqlLedgerStore(SqlBudgetStore):
                 update(pockets)
                 .where((pockets.c.id == pocket_id) & pockets.c.active)
                 .values(active=False, archived_at=at)
+            )
+            # 6.5: una acumulable archivada deja de ser destino sugerido (PROPUESTO 16)
+            conn.execute(
+                update(pockets)
+                .where(pockets.c.surplus_target_pocket_id == pocket_id)
+                .values(surplus_target_pocket_id=None)
             )
             conn.execute(
                 update(savings_goals)
@@ -750,6 +781,7 @@ class SqlLedgerStore(SqlBudgetStore):
         on: date,
     ) -> dict:
         def work(conn: Connection) -> dict:
+            self._guard_months(conn, [new.month])  # RN-44
             snapshot = self._lock_and_read(conn, [new.from_pocket_id, new.to_pocket_id])
             respond = verify(snapshot)  # RN-41/RN-42 otra vez, con las bolsas bloqueadas
             transfer_id = conn.execute(
@@ -795,3 +827,153 @@ class SqlLedgerStore(SqlBudgetStore):
                 )
                 for r in conn.execute(query).all()
             ]
+
+    # --- Cierre de mes (Hito 9) ---
+
+    def _read_closure_snapshot(self, conn: Connection, month: Month) -> ClosureSnapshot:
+        pocket_rows = conn.execute(
+            select(pockets.c.id, pockets.c.name, pockets.c.behavior, pockets.c.active).order_by(
+                pockets.c.id
+            )
+        ).all()
+        entries = [
+            AllocationEntry(r.pocket_id, Month.parse(r.budget_month), r.amount, IncomeKind(r.kind))
+            for r in conn.execute(
+                select(
+                    income_allocations.c.pocket_id,
+                    incomes.c.budget_month,
+                    income_allocations.c.amount,
+                    incomes.c.kind,
+                )
+                .select_from(
+                    income_allocations.join(incomes, incomes.c.id == income_allocations.c.income_id)
+                )
+                .where(LIVE_INCOME)
+            ).all()
+        ]
+        spent = [
+            ExpenseEntry(r.pocket_id, Month.parse(r.month), r.amount)
+            for r in conn.execute(
+                select(expenses.c.pocket_id, expenses.c.month, expenses.c.amount).where(
+                    LIVE_EXPENSE
+                )
+            ).all()
+        ]
+        pending = conn.execute(
+            select(incomes.c.id)
+            .where(
+                LIVE_EXTRA
+                & (incomes.c.allocation_status == "pendiente")
+                & (incomes.c.budget_month == str(month))
+            )
+            .order_by(incomes.c.id)
+        ).scalars()
+        return ClosureSnapshot(
+            month,
+            [Pocket(r.id, r.name, Behavior(r.behavior), r.active) for r in pocket_rows],
+            entries,
+            spent,
+            self._read_transfers(conn),
+            self._read_goals(conn),
+            ClosureState(self._read_closed(conn), self._read_movement_months(conn)),
+            list(pending),
+            self._read_surplus_targets(conn),
+        )
+
+    def closure_snapshot(self, month: Month) -> ClosureSnapshot:
+        with self._engine.connect() as conn:
+            return self._read_closure_snapshot(conn, month)
+
+    def closure_adjustments(self, month: Month | None) -> list[ClosureAdjustmentRow]:
+        query = select(closure_adjustments).order_by(
+            closure_adjustments.c.month, closure_adjustments.c.pocket_id
+        )
+        if month is not None:
+            query = query.where(closure_adjustments.c.month == str(month))
+        with self._engine.connect() as conn:
+            return [
+                ClosureAdjustmentRow(Month.parse(r.month), r.pocket_id, r.kind, r.amount)
+                for r in conn.execute(query).all()
+            ]
+
+    def record_closure(
+        self,
+        month: Month,
+        closed_at: datetime,
+        day: date,
+        operation: Operation,
+        verify: Callable[[ClosureSnapshot], ClosureWrite],
+    ) -> dict:
+        def work(conn: Connection) -> dict:
+            # Exclusivo: espera a las escrituras en curso y detiene las nuevas hasta el final
+            conn.execute(select(func.pg_advisory_xact_lock(CLOSURE_LOCK_NS, 0)))
+            conn.execute(select(pockets.c.id).order_by(pockets.c.id).with_for_update()).all()
+            plan = verify(self._read_closure_snapshot(conn, month))
+            conn.execute(
+                insert(month_closures).values(
+                    month=str(month), status="cerrado", closed_at=closed_at
+                )
+            )
+            transfer_ids = []
+            for from_id, to_id, amount in plan.transfers:
+                transfer_ids.append(
+                    conn.execute(
+                        insert(transfers)
+                        .values(
+                            transfer_date=day,
+                            month=str(month),
+                            from_pocket_id=from_id,
+                            to_pocket_id=to_id,
+                            amount=amount,
+                            reason=TransferReason.MONTH_CLOSE.value,
+                            note=None,
+                        )
+                        .returning(transfers.c.id)
+                    ).scalar_one()
+                )
+            self._before_adjustments(conn)
+            if plan.adjustments:
+                conn.execute(
+                    insert(closure_adjustments),
+                    [
+                        {"month": str(month), "pocket_id": pid, "kind": kind, "amount": amount}
+                        for pid, kind, amount in plan.adjustments
+                    ],
+                )
+            self._settle_goals(conn, day)  # un destino puede completar una meta (RN-24)
+            return plan.respond(transfer_ids)
+
+        return self._write(operation, work)
+
+    def _before_adjustments(self, conn: Connection) -> None:
+        """Punto de prueba: las pruebas de "cierre interrumpido" fallan aquí. No hace nada."""
+
+    @staticmethod
+    def _read_surplus_targets(conn: Connection) -> dict[int, int]:
+        rows = conn.execute(
+            select(pockets.c.id, pockets.c.surplus_target_pocket_id).where(
+                pockets.c.surplus_target_pocket_id.is_not(None)
+            )
+        ).all()
+        return {r.id: r.surplus_target_pocket_id for r in rows}
+
+    def surplus_targets(self) -> dict[int, int]:
+        with self._engine.connect() as conn:
+            return self._read_surplus_targets(conn)
+
+    def set_surplus_target(
+        self,
+        pocket_id: int,
+        target_id: int | None,
+        operation: Operation,
+        respond: Callable[[], dict],
+    ) -> dict:
+        def work(conn: Connection) -> dict:
+            conn.execute(
+                update(pockets)
+                .where(pockets.c.id == pocket_id)
+                .values(surplus_target_pocket_id=target_id)
+            )
+            return respond()
+
+        return self._write(operation, work)

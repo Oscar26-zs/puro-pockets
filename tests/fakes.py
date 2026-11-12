@@ -12,6 +12,7 @@ from puro_pockets.domain.balances import (
     TransferEntry,
 )
 from puro_pockets.domain.categories import Category
+from puro_pockets.domain.closures import ClosedMonths, ClosureState, check_open
 from puro_pockets.domain.errors import (
     AlreadyVoided,
     CategoryAlreadyExists,
@@ -29,6 +30,7 @@ from puro_pockets.domain.ledger import MovementKind
 from puro_pockets.domain.money import Converted, Currency
 from puro_pockets.domain.pockets import Behavior, Pocket, normalize_name
 from puro_pockets.domain.recurring import RecurringRef, RecurringTemplate
+from puro_pockets.domain.transfers import TransferReason
 from puro_pockets.services.ledger import (
     ExpenseRow,
     IncomeRow,
@@ -36,7 +38,12 @@ from puro_pockets.services.ledger import (
     StoredOperation,
 )
 from puro_pockets.services.oauth import CodeRecord, TokenRecord
-from puro_pockets.services.records import LedgerSnapshot, TransferRow
+from puro_pockets.services.records import (
+    ClosureAdjustmentRow,
+    ClosureSnapshot,
+    LedgerSnapshot,
+    TransferRow,
+)
 
 
 class InMemoryOAuthStore:
@@ -144,7 +151,23 @@ class InMemoryBudgetStore:
         self.recurring = []  # RecurringTemplate
         self.goals = []  # Goal
         self.transfers = []  # TransferRow (nunca se editan ni se borran, RN-43)
+        self.closures = {}  # Month -> closed_at (Hito 9; nunca se reabren)
+        self.adjustments = []  # ClosureAdjustmentRow
+        self.surplus = {}  # bolsa de consumo -> acumulable sugerida (6.5)
         self.writes = 0
+
+    # --- Meses cerrados (Hito 9): misma regla única que el almacén SQL ---
+
+    def closure_state(self):
+        months = {r.budget_month for r in self.incomes}
+        months |= {e.month for e in self.expenses}
+        months |= {t.month for t in self.transfers}
+        return ClosureState(ClosedMonths(frozenset(self.closures)), frozenset(months))
+
+    def _guard(self, months):
+        closed = ClosedMonths(frozenset(self.closures))
+        for month in sorted(set(months)):
+            check_open(month, closed)
 
     def list_pockets(self):
         return sorted(self.pockets, key=lambda p: p.id)
@@ -156,6 +179,7 @@ class InMemoryBudgetStore:
         return dict(self.allocations.get(month, {}))
 
     def replace_allocation(self, month, rows):
+        self._guard([month])
         self.writes += 1
         self.allocations[month] = dict(rows)
 
@@ -165,6 +189,7 @@ class InMemoryBudgetStore:
     def _add_income(
         self, kind, income_date, budget_month, money, lines, pending=False, source=None
     ):
+        self._guard([budget_month])
         if kind is IncomeKind.INITIAL_BALANCE and self.has_initial_balance():
             raise InitialBalanceAlreadyLoaded()
         self.writes += 1
@@ -280,6 +305,7 @@ class InMemoryLedgerStore(InMemoryBudgetStore):
             raise OperationTaken()
         index = next(i for i, r in enumerate(self.incomes) if r.id == income_id)
         row = self.incomes[index]
+        self._guard([row.budget_month])
         ref = f"I-{income_id}"
         if row.voided:
             raise MovementVoided(ref)
@@ -296,6 +322,7 @@ class InMemoryLedgerStore(InMemoryBudgetStore):
     def record_expense(self, expense, operation, respond):
         if operation.operation_id in self.operations:
             raise OperationTaken()
+        self._guard([expense.month])
         if expense.recurring_id is not None and expense.recurring_id in self.recurring_payments(
             expense.month
         ):
@@ -331,6 +358,8 @@ class InMemoryLedgerStore(InMemoryBudgetStore):
         index = next((i for i, r in enumerate(rows) if r.id == ref.number), None)
         if index is None:
             raise MovementNotFound(str(ref))
+        row = rows[index]
+        self._guard([row.budget_month if ref.kind is MovementKind.INCOME else row.month])
         if rows[index].voided:
             raise AlreadyVoided(str(ref))
         self.writes += 1
@@ -481,6 +510,7 @@ class InMemoryLedgerStore(InMemoryBudgetStore):
     def create_pocket(self, new, operation, respond):
         if operation.operation_id in self.operations:
             raise OperationTaken()
+        self._guard([new.month])
         if any(normalize_name(p.name) == normalize_name(new.name) for p in self.pockets):
             raise PocketAlreadyExists()
         self.writes += 1
@@ -507,8 +537,10 @@ class InMemoryLedgerStore(InMemoryBudgetStore):
     def archive_pocket(self, pocket_id, at, months, operation, respond, verify=None):
         if operation.operation_id in self.operations:
             raise OperationTaken()
+        self._guard(months)
         if verify is not None:
             verify(self._snapshot([pocket_id]))
+        self.surplus = {k: v for k, v in self.surplus.items() if v != pocket_id}
         self.writes += 1
         self.pockets = [replace(p, active=False) if p.id == pocket_id else p for p in self.pockets]
         self.goals = [
@@ -576,6 +608,7 @@ class InMemoryLedgerStore(InMemoryBudgetStore):
     def record_transfer(self, new, operation, verify, on):
         if operation.operation_id in self.operations:
             raise OperationTaken()
+        self._guard([new.month])
         respond = verify(self._snapshot([new.from_pocket_id, new.to_pocket_id]))
         self.writes += 1
         transfer_id = len(self.transfers) + 1
@@ -604,3 +637,73 @@ class InMemoryLedgerStore(InMemoryBudgetStore):
             and (pocket_id is None or pocket_id in (t.from_pocket_id, t.to_pocket_id))
         ]
         return sorted(rows, key=lambda t: (t.transfer_date, t.id), reverse=True)[:limit]
+
+    # --- Cierre de mes (Hito 9) ---
+
+    def closure_snapshot(self, month):
+        return ClosureSnapshot(
+            month,
+            self.list_pockets(),
+            self.allocation_entries(),
+            self.expense_entries(),
+            self.transfer_entries(),
+            list(self.goals),
+            self.closure_state(),
+            [
+                r.id
+                for r in self.incomes
+                if r.kind is IncomeKind.EXTRA
+                and r.pending
+                and not r.voided
+                and r.budget_month == month
+            ],
+            dict(self.surplus),
+        )
+
+    def closure_adjustments(self, month):
+        return [a for a in self.adjustments if month is None or a.month == month]
+
+    def record_closure(self, month, closed_at, day, operation, verify):
+        if operation.operation_id in self.operations:
+            raise OperationTaken()
+        plan = verify(self.closure_snapshot(month))
+        self.writes += 1
+        self.closures[month] = closed_at
+        ids = []
+        for from_id, to_id, amount in plan.transfers:
+            transfer_id = len(self.transfers) + 1
+            self.transfers.append(
+                TransferRow(
+                    transfer_id,
+                    day,
+                    month,
+                    from_id,
+                    to_id,
+                    amount,
+                    TransferReason.MONTH_CLOSE,
+                    None,
+                )
+            )
+            ids.append(transfer_id)
+        self.adjustments.extend(
+            ClosureAdjustmentRow(month, pid, kind, amount) for pid, kind, amount in plan.adjustments
+        )
+        self._settle_goals(day)
+        response = plan.respond(ids)
+        self._save_operation(operation, response)
+        return response
+
+    def surplus_targets(self):
+        return dict(self.surplus)
+
+    def set_surplus_target(self, pocket_id, target_id, operation, respond):
+        if operation.operation_id in self.operations:
+            raise OperationTaken()
+        self.writes += 1
+        if target_id is None:
+            self.surplus.pop(pocket_id, None)
+        else:
+            self.surplus[pocket_id] = target_id
+        response = respond()
+        self._save_operation(operation, response)
+        return response

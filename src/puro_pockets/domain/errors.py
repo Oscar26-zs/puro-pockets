@@ -195,3 +195,53 @@ class TransfersAreFinal(DomainError):
             f"La transferencia {reference} no se anula ni se edita (RN-43). Para corregirla, "
             "registra otra transferencia en sentido contrario."
         )
+
+
+class MonthClosed(DomainError):
+    """RN-44, RN-48, RN-53: un mes cerrado no admite movimientos, repartos, transferencias,
+    anulaciones ni cambios de porcentajes."""
+
+    def __init__(self, month: str, earlier: bool = False) -> None:
+        why = "es anterior a un mes ya cerrado y cuenta como cerrado" if earlier else "está cerrado"
+        super().__init__(
+            f"El mes {month} {why}: no admite movimientos nuevos, repartos, transferencias, "
+            "anulaciones ni cambios de porcentajes (RN-44, RN-48, RN-53). Un cierre no se reabre; "
+            "para corregir, registra una transferencia de ajuste o un movimiento en un mes abierto."
+        )
+
+
+class MonthNotClosable(DomainError):
+    """El mes pedido no se puede cerrar ahora (ya cerrado, futuro, antes de su último día o fuera
+    de orden)."""
+
+    def __init__(self, month: str, reason: str) -> None:
+        super().__init__(f"No se puede cerrar el mes {month}: {reason}")
+
+
+class ExtrasPendingBlock(DomainError):
+    """Un extra pendiente del mes bloquea su cierre (RN-06, RN-09)."""
+
+    def __init__(self, month: str, references: list[str]) -> None:
+        refs = ", ".join(references)
+        super().__init__(
+            f"El mes {month} tiene ingresos extra pendientes de repartir ({refs}). Antes de "
+            "cerrarlo, repártelos con confirm_allocation o anúlalos con void_transaction."
+        )
+
+
+class ClosureStateChanged(DomainError):
+    """La ficha del cierre ya no corresponde al estado actual."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "El estado del mes cambió desde la vista previa (saldos, gastos, transferencias o "
+            "metas): repite preview_month_close, muéstrale el resultado al propietario y confirma "
+            "con la ficha nueva."
+        )
+
+
+class ClosureProposalInvalid(DomainError):
+    """La propuesta de coberturas o destinos no cumple RN-47, RN-52 o la sección 10."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"La propuesta de cierre no es válida: {reason}")

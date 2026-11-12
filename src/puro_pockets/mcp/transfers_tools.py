@@ -25,8 +25,8 @@ Amount = Annotated[
     WholeNumberInput, Field(description="Colones: entero positivo (sin decimales ni dólares).")
 ]
 # El motivo no se valida con pydantic (su error saldría en inglés y con el valor recibido): pasa al
-# dominio, que rechaza 'cierre_de_mes' (Hito 9) y cualquier otro con un mensaje en español. El
-# esquema JSON sigue declarando los tres valores permitidos.
+# dominio, que rechaza 'cierre_de_mes' (solo de close_month) y cualquier otro con un mensaje en
+# español. El esquema JSON sigue declarando los tres valores permitidos.
 Reason = Annotated[
     Any,
     WithJsonSchema(
@@ -35,7 +35,7 @@ Reason = Annotated[
             "enum": ["cubrir_sobregasto", "reasignacion", "ajuste"],
             "description": "cubrir_sobregasto (cubrir una bolsa en negativo), reasignacion (por "
             "ejemplo vaciar una bolsa antes de archivarla) o ajuste. 'cierre_de_mes' es solo del "
-            "cierre de mes (Hito 9).",
+            "cierre de mes (close_month).",
         }
     ),
 ]

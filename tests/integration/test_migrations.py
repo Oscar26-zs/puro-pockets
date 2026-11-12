@@ -15,7 +15,7 @@ from .conftest import alembic_config
 
 pytestmark = pytest.mark.integration
 
-HEAD = "0007_transfers"
+HEAD = "0008_month_closures"
 
 
 def _scalar(url: str, sql: str, **params):
@@ -676,3 +676,144 @@ def test_0007_restricciones_y_disparador(empty_database):
         "AND contype = 'f'",
     )
     assert rules == [("r",), ("r",)]  # ON DELETE RESTRICT en las dos claves foráneas
+
+
+# --- Hito 9: 0008_month_closures ---
+
+HITO8_DATA = (*HITO7_DATA, TRANSFER)
+CLOSURE = (
+    "INSERT INTO month_closures (month, status, closed_at) VALUES ('2026-10', 'cerrado', now())"
+)
+ADJUSTMENT = (
+    "INSERT INTO closure_adjustments (month, pocket_id, kind, amount) "
+    "VALUES ('2026-10', 1, 'sobrante_no_destinado', 500)"
+)
+
+
+def test_0008_conserva_los_datos_del_hito_8_y_no_cierra_nada(empty_database):
+    url, name = empty_database
+    assert_temp_database(url, name)
+    config = alembic_config(url)
+    command.upgrade(config, "0007_transfers")
+    for sql in HITO8_DATA:
+        _execute(url, sql)
+    tables = (
+        "pockets",
+        "savings_goals",
+        "incomes",
+        "income_allocations",
+        "expenses",
+        "transfers",
+        "idempotency_keys",
+        "recurring_expenses",
+        "budget_month_allocations",
+        "categories",
+    )
+    before = {table: _rows(url, f"SELECT * FROM {table} ORDER BY 1, 2") for table in tables}
+    assert before["transfers"] and before["expenses"]  # hay datos que conservar
+    command.upgrade(config, "head")
+    assert _current_revision(url) == HEAD
+    for table in tables:
+        assert _rows(url, f"SELECT * FROM {table} ORDER BY 1, 2") == before[table], table
+    assert _scalar(url, "SELECT count(*) FROM month_closures") == 0  # todo queda abierto
+    assert _scalar(url, "SELECT count(*) FROM closure_adjustments") == 0
+
+
+def test_0008_se_niega_si_una_transferencia_no_es_de_su_mes(empty_database):
+    url, _ = empty_database
+    config = alembic_config(url)
+    command.upgrade(config, "0007_transfers")
+    _execute(url, TRANSFER.replace("'2026-11', 1, 3", "'2026-10', 1, 3"))
+    with pytest.raises(RuntimeError, match="0008_month_closures cancelado"):
+        command.upgrade(config, "head")
+    assert _current_revision(url) == "0007_transfers"
+
+
+def test_0008_downgrade_protegido(empty_database, monkeypatch):
+    url, _ = empty_database
+    config = alembic_config(url)
+    command.upgrade(config, "head")
+    _execute(url, CLOSURE)
+    _execute(url, ADJUSTMENT)
+    monkeypatch.delenv("ALLOW_DESTRUCTIVE_DOWNGRADE", raising=False)
+    with pytest.raises(RuntimeError, match="0008_month_closures cancelado"):
+        command.downgrade(config, "0007_transfers")
+    assert _current_revision(url) == HEAD
+    assert _scalar(url, "SELECT count(*) FROM month_closures") == 1
+
+    monkeypatch.setenv("ALLOW_DESTRUCTIVE_DOWNGRADE", "true")
+    command.downgrade(config, "0007_transfers")
+    assert _scalar(url, "SELECT to_regclass('public.month_closures')") is None
+    command.upgrade(config, "head")
+    assert _current_revision(url) == HEAD
+
+
+def test_0008_downgrade_sin_cierres_no_pide_la_variable(empty_database, monkeypatch):
+    url, _ = empty_database
+    config = alembic_config(url)
+    command.upgrade(config, "head")
+    monkeypatch.delenv("ALLOW_DESTRUCTIVE_DOWNGRADE", raising=False)
+    command.downgrade(config, "0007_transfers")
+    assert _current_revision(url) == "0007_transfers"
+
+
+def test_0008_restricciones_y_disparadores(empty_database):
+    url, _ = empty_database
+    command.upgrade(alembic_config(url), "head")
+    _execute(url, CLOSURE)
+    _execute(url, ADJUSTMENT)
+    _execute(
+        url,
+        "INSERT INTO closure_adjustments (month, pocket_id, kind, amount) "
+        "VALUES ('2026-10', 3, 'sobregasto_no_cubierto', -200)",
+    )
+    columns = "transfer_date, month, from_pocket_id, to_pocket_id, amount, reason"
+    _execute(  # el cierre lleva el mes cerrado aunque la fecha sea de otro mes
+        url,
+        f"INSERT INTO transfers ({columns}) VALUES ('2026-11-01', '2026-10', 1, 2, 5, "
+        "'cierre_de_mes')",
+    )
+    bad = [
+        CLOSURE.replace("2026-10", "2026-13"),  # formato de mes
+        CLOSURE.replace("'2026-10'", "'2026-09'").replace("now()", "NULL"),  # cerrado sin instante
+        CLOSURE.replace("'2026-10'", "'2026-09'").replace("'cerrado'", "'otro'"),  # estado
+        "INSERT INTO closure_adjustments (month, pocket_id, kind, amount) "
+        "VALUES ('2026-10', 2, 'sobrante_no_destinado', -1)",  # signo
+        "INSERT INTO closure_adjustments (month, pocket_id, kind, amount) "
+        "VALUES ('2026-10', 2, 'sobregasto_no_cubierto', 1)",  # signo
+        "INSERT INTO closure_adjustments (month, pocket_id, kind, amount) "
+        "VALUES ('2026-10', 2, 'regalo', 1)",  # tipo
+        "INSERT INTO closure_adjustments (month, pocket_id, kind, amount) "
+        "VALUES ('2026-10', 1, 'sobrante_no_destinado', 9)",  # repetido
+        "INSERT INTO closure_adjustments (month, pocket_id, kind, amount) "
+        "VALUES ('2026-08', 1, 'sobrante_no_destinado', 9)",  # mes sin cierre (FK)
+        "INSERT INTO closure_adjustments (month, pocket_id, kind, amount) "
+        "VALUES ('2026-10', 999, 'sobrante_no_destinado', 9)",  # bolsa inexistente (FK)
+        f"INSERT INTO transfers ({columns}) VALUES ('2026-11-11', '2026-10', 1, 3, 5, 'ajuste')",
+        f"INSERT INTO transfers ({columns}) VALUES ('2026-11-11', '2026-12', 1, 3, 5, "
+        "'cierre_de_mes')",  # el cierre nunca lleva un mes posterior a su fecha
+    ]
+    for sql in bad:
+        with pytest.raises(IntegrityError):
+            _execute(url, sql)
+    reopen = [
+        "UPDATE month_closures SET status = 'abierto', closed_at = NULL",
+        "UPDATE month_closures SET month = '2026-09'",
+        "UPDATE month_closures SET closed_at = now() - interval '1 day'",
+    ]
+    for sql in reopen:
+        with pytest.raises(IntegrityError, match="no se reabre"):
+            _execute(url, sql)
+    with pytest.raises(IntegrityError, match="no se borra"):
+        _execute(url, "DELETE FROM month_closures")
+    for sql in ("UPDATE closure_adjustments SET amount = 1", "DELETE FROM closure_adjustments"):
+        with pytest.raises(IntegrityError, match="no se edita ni se borra"):
+            _execute(url, sql)
+    assert _scalar(url, "SELECT status FROM month_closures") == "cerrado"
+    assert _scalar(url, "SELECT count(*) FROM closure_adjustments") == 2
+    rules = _rows(
+        url,
+        "SELECT confdeltype FROM pg_constraint WHERE conrelid = 'closure_adjustments'::regclass "
+        "AND contype = 'f'",
+    )
+    assert rules == [("r",), ("r",)]  # ON DELETE RESTRICT

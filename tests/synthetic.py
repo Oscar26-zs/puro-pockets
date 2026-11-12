@@ -8,8 +8,10 @@ USD), anulaciones (incluido el saldo inicial y su nueva carga). Desde el Hito 6:
 (`apply_structure`): bolsas nuevas con las tres estrategias, metas creadas y cambiadas, y archivado
 de bolsas con saldo cero; ninguna mueve un saldo. Desde el Hito 8, transferencias
 (`apply_transfers`): válidas con los tres motivos, rechazadas por exceder lo disponible o salir de
-una bolsa en negativo, y bolsas vaciadas (o cubiertas) con una transferencia y luego archivadas. El
-Hito 9 agregará cierres.
+una bolsa en negativo, y bolsas vaciadas (o cubiertas) con una transferencia y luego archivadas.
+Desde el Hito 9, cierres de mes (`apply_closures`), en orden: déficits cubiertos con sobrantes de
+consumo o desde el saldo de una acumulable, déficits no cubiertos, sobrantes destinados a una
+acumulable, no destinados (explícitos o por resto), y escrituras rechazadas en meses cerrados.
 """
 
 from __future__ import annotations
@@ -474,4 +476,103 @@ async def apply_transfers(store, dataset: SyntheticDataset) -> dict[str, int]:
                 **args,
             )
             counts["archived"] += 1
+    return counts
+
+
+async def _close_one(ledger, store, month: Month, rng: random.Random, prefix: str, counts) -> None:
+    """Arma una propuesta válida con los datos de la vista previa (como Claude) y cierra."""
+    snapshot = store.closure_snapshot(month)
+    for income_id in snapshot.pending_extras:  # bloquean el cierre: se anulan (RN-06)
+        await ledger.void_transaction(
+            f"I-{income_id}", VOID_REASON, f"{prefix}-vx-{income_id}", confirm=True
+        )
+    data = await ledger.preview_month_close(str(month))
+    surplus = {c.pocket: c.available for c in data.consumption if c.active and c.available > 0}
+    deficit = {c.pocket: -c.available for c in data.consumption if c.active and c.available < 0}
+    savings = {a.pocket: a.balance for a in data.accumulable}
+    covers: list[dict] = []
+    for target, need in deficit.items():  # 10.1: primero los sobrantes de consumo
+        for source in list(surplus):
+            if need == 0:
+                break
+            take = min(need, surplus[source])
+            if take > 0:
+                covers.append({"from_pocket": source, "to_pocket": target, "amount": take})
+                surplus[source] -= take
+                need -= take
+        deficit[target] = need
+    remaining = {k: v for k, v in deficit.items() if v > 0}
+    if remaining and rng.random() < 0.5:  # RN-52: cobertura opcional desde una acumulable
+        rich = [k for k, v in savings.items() if v > 0]
+        if rich:
+            source = rng.choice(rich)
+            target = rng.choice(list(remaining))
+            take = rng.randint(1, min(savings[source], remaining[target]))
+            covers.append({"from_pocket": source, "to_pocket": target, "amount": take})
+            counts["from_balance"] += 1
+            remaining[target] -= take
+    if any(v > 0 for v in remaining.values()):
+        counts["uncovered"] += 1
+    destinations: list[dict] = []
+    for source, left in surplus.items():
+        if left <= 0:
+            continue
+        to_saving = rng.randint(0, left) if savings and rng.random() < 0.7 else 0
+        if to_saving:
+            target = rng.choice(list(savings))
+            destinations.append({"from_pocket": source, "to_pocket": target, "amount": to_saving})
+            counts["destined"] += 1
+        rest = left - to_saving
+        if rest and rng.random() < 0.3:
+            destinations.append({"from_pocket": source, "to_pocket": None, "amount": rest})
+        if rest:
+            counts["unassigned"] += 1
+    preview = await ledger.preview_month_close(str(month), covers, destinations)
+    await ledger.close_month(
+        str(month),
+        covers,
+        destinations,
+        confirm=True,
+        preview_token=preview.preview_token,
+        operation_id=f"{prefix}-close-{month}",
+    )
+    counts["closed"] += 1
+
+
+async def apply_closures(store, dataset: SyntheticDataset) -> dict[str, int]:
+    """Hito 9: cierra en orden algunos meses ya terminados y comprueba que lo cerrado rechaza
+    escrituras. Devuelve contadores de cada caso ejercitado."""
+    from puro_pockets.domain.closures import default_close_month
+
+    rng = random.Random(dataset.seed * 7 + 9)
+    ledger = LedgerService(store, today=lambda: TODAY, rate_range=RATES)
+    prefix = f"syn-{dataset.seed}-h9"
+    counts = {
+        "closed": 0,
+        "from_balance": 0,
+        "uncovered": 0,
+        "destined": 0,
+        "unassigned": 0,
+        "rejected": 0,
+    }
+    for _ in range(rng.randint(0, 5)):
+        month = default_close_month(TODAY, store.closure_state())
+        if month is None:
+            break
+        await _close_one(ledger, store, month, rng, prefix, counts)
+    closed = store.closure_state().closed.latest
+    if closed is not None and store.list_pockets():
+        pocket = next((p for p in store.list_pockets() if p.active), None)
+        if pocket is not None:
+            try:  # un gasto con fecha del mes cerrado se rechaza (RN-44, RN-48)
+                await ledger.add_expense(
+                    1000,
+                    f"{prefix}-gasto-cerrado",
+                    pocket=pocket.name,
+                    expense_date=date(closed.year, closed.month, 1).isoformat(),
+                )
+            except DomainError:
+                counts["rejected"] += 1
+            else:
+                raise AssertionError(f"Debió rechazarse: semilla={dataset.seed}")
     return counts

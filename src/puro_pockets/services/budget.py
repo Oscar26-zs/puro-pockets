@@ -19,6 +19,7 @@ from typing import Protocol, TypeVar
 from zoneinfo import ZoneInfo
 
 import anyio
+from pydantic import BaseModel, Field
 
 from puro_pockets.domain.allocation import (
     ResolvedAllocation,
@@ -35,6 +36,7 @@ from puro_pockets.domain.balances import (
     TransferEntry,
     pocket_balance,
 )
+from puro_pockets.domain.closures import ClosureState, check_open, is_closed, pending_closure
 from puro_pockets.domain.errors import InitialBalanceAlreadyLoaded
 from puro_pockets.domain.initial_balance import validate_initial_balance
 from puro_pockets.domain.months import Month
@@ -97,6 +99,10 @@ class BudgetStore(Protocol):
         """Todas las transferencias (Hito 8): nunca se anulan (RN-43)."""
         ...
 
+    def closure_state(self) -> ClosureState:
+        """Meses cerrados y meses con movimientos (Hito 9)."""
+        ...
+
 
 @dataclass(frozen=True)
 class InitialBalanceView:
@@ -107,10 +113,28 @@ class InitialBalanceView:
     saved: bool = False
 
 
+class PendingClosureItem(BaseModel):
+    """RN-49: un mes ya terminado (o en su último día) que falta cerrar."""
+
+    month: str = Field(description="Mes AAAA-MM.")
+    has_movements: bool = Field(
+        description="False si no tiene movimientos: se cierra igual, para respetar el orden."
+    )
+
+
+def pending_closure_items(today: date, state: ClosureState) -> list[PendingClosureItem]:
+    return [
+        PendingClosureItem(month=str(p.month), has_movements=p.has_movements)
+        for p in pending_closure(today, state)
+    ]
+
+
 @dataclass(frozen=True)
 class PocketsView:
     month: Month
     pockets: tuple[PocketBalance, ...]
+    month_closed: bool = False
+    pending_closure: tuple[PendingClosureItem, ...] = ()
 
 
 def local_today(timezone: str) -> Callable[[], date]:
@@ -132,6 +156,11 @@ class BudgetService:
     def _month(self, month: str | None) -> Month:
         return self.current_month() if month is None else Month.parse(month)
 
+    def _ensure_open(self, month: Month) -> None:
+        """La única regla de mes cerrado (`domain.closures.check_open`); el almacén la repite
+        dentro de la transacción."""
+        check_open(month, self._store.closure_state().closed)
+
     # --- Porcentajes (RN-01, RN-02, RN-03) ---
 
     async def set_allocation(
@@ -139,6 +168,7 @@ class BudgetService:
     ) -> ResolvedAllocation:
         target = self._month(month)
         ensure_editable(target, self.current_month())
+        await self._run(partial(self._ensure_open, target))  # solo meses abiertos (Hito 9)
         pockets = await self._run(self._store.list_pockets)
         rows = validate_allocation(percentages, pockets)
         await self._run(partial(self._store.replace_allocation, target, rows))
@@ -161,6 +191,7 @@ class BudgetService:
         self, amounts: Sequence[tuple[object, object]]
     ) -> InitialBalanceView:
         """Vista previa: valida y calcula, sin guardar nada (principio 3.2)."""
+        await self._run(partial(self._ensure_open, self.current_month()))
         pockets = await self._run(self._store.list_pockets)
         items = validate_initial_balance(amounts, pockets)
         loaded = await self._run(self._store.has_initial_balance)
@@ -215,7 +246,10 @@ class BudgetService:
         entries = self._store.allocation_entries()
         expenses = self._store.expense_entries()
         transfers = self._store.transfer_entries()
+        state = self._store.closure_state()
         return PocketsView(
             current,
             tuple(pocket_balance(p, entries, current, expenses, transfers) for p in pockets),
+            is_closed(current, state.closed),
+            tuple(pending_closure_items(self._today(), state)),
         )

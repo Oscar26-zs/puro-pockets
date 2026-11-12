@@ -6,8 +6,9 @@
   exige su `preview_token` y guarda de forma atómica. El almacén bloquea las dos bolsas, vuelve a
   validar RN-42 con lo que hay en ese momento y evalúa las metas en la misma transacción.
 
-Siempre en colones y con la fecha de hoy; el mes es el de esa fecha (hasta el Hito 9 todos los
-meses están abiertos). No hay tools para anular ni editar: un error se corrige con otra
+Siempre en colones y con la fecha de hoy; el mes es el de esa fecha, y un mes cerrado no admite
+transferencias (RN-44). Las del cierre (`cierre_de_mes`) solo las crea `close_month`.
+No hay tools para anular ni editar: un error se corrige con otra
 transferencia en sentido contrario (RN-43). Los registros no incluyen montos, notas, nombres de
 bolsas ni de metas.
 """
@@ -216,6 +217,7 @@ class TransfersMixin(LedgerCore):
         target = find_pocket(pockets, request.to_pocket)
         check_pockets(source, target)
         month = Month.of(request.day)
+        self._ensure_open(month)  # RN-44: el mes de una transferencia normal es el de hoy
         goals = [
             g for g in self._store.list_goals() if g.live and g.pocket_id in (source.id, target.id)
         ]

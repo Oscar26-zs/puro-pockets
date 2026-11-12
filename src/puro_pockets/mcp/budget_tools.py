@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from puro_pockets.domain.allocation import ResolvedAllocation
 from puro_pockets.mcp.inputs import MONTH_DESCRIPTION, WholeNumberInput
 from puro_pockets.mcp.inputs import domain_errors as _domain_errors
-from puro_pockets.services.budget import BudgetService, InitialBalanceView
+from puro_pockets.services.budget import BudgetService, InitialBalanceView, PendingClosureItem
 
 # Porcentajes y montos pasan sin validar a la capa de dominio, que exige enteros (rechaza 50.0) con
 # mensajes sin el valor recibido: el error de pydantic lo incluiría y el SDK lo registra.
@@ -71,7 +71,14 @@ class PocketStatus(BaseModel):
 
 class PocketsResult(BaseModel):
     month: str = Field(description="Mes actual.")
+    month_closed: bool = Field(
+        description="True si el mes actual ya se cerró (cierre hecho en su último día)."
+    )
     pockets: list[PocketStatus]
+    pending_closure: list[PendingClosureItem] = Field(
+        description="RN-49: meses terminados sin cerrar, en el orden en que deben cerrarse. Si "
+        "hay alguno, propón el ritual de fin de mes empezando por preview_month_close."
+    )
 
 
 def _allocation(resolved: ResolvedAllocation) -> AllocationResult:
@@ -158,6 +165,8 @@ def register_budget_tools(server: MCPServer, service: BudgetService) -> None:
         view = await service.list_pockets()
         return PocketsResult(
             month=str(view.month),
+            month_closed=view.month_closed,
+            pending_closure=list(view.pending_closure),
             pockets=[
                 PocketStatus(
                     name=b.pocket.name,

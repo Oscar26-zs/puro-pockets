@@ -213,6 +213,7 @@ class ExtrasMixin(LedgerCore):
             replay = self._replay(operation)
             if replay is not None:
                 return ExtraIncomeResult.model_validate(replay)
+            self._ensure_open(month)  # RN-44, RN-48: extras por mes presupuestario
 
             def respond(income_id: int) -> dict:
                 return ExtraIncomeResult(
@@ -376,6 +377,7 @@ class ExtrasMixin(LedgerCore):
             if replay is not None:
                 return ExtraAllocationResult.model_validate(replay)
         row = self._extra(str(ref), allow_distributed=False)
+        self._ensure_open(row.budget_month)  # RN-44, RN-48: repartos del mes cerrado
         shares = validate_extra_shares(pairs, self._store.list_pockets())
         parts = allocate_by_percentages(row.amount, shares)
         expected = preview_token(str(ref), row.amount, shares)
