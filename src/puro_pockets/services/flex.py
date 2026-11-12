@@ -4,9 +4,10 @@
 - `create_bolsa` crea la bolsa y escribe el conjunto completo de porcentajes del mes objetivo en una
   transacción (RN-13). Aplica desde el mes siguiente por defecto o desde el actual (RN-15); nunca un
   mes pasado. Ningún reparto ya guardado se recalcula: guardan el porcentaje que usaron.
-- `archive_bolsa` exige saldo o disponible cero (RN-18), nunca borra (RN-16) y reescribe sin ella
-  los porcentajes del mes actual y de cada mes futuro con porcentajes propios (RN-17): ningún mes
-  de ahora en adelante reparte a una bolsa inactiva. Sus metas se archivan con ella (sección 6.4).
+- `archive_bolsa` exige saldo o disponible cero (RN-18; se vacía antes con una transferencia,
+  Hito 8, y se vuelve a comprobar dentro de la transacción), nunca borra (RN-16) y reescribe sin
+  ella los porcentajes del mes actual y de cada mes futuro con porcentajes propios (RN-17): ningún
+  mes de ahora en adelante reparte a una bolsa inactiva. Sus metas se archivan con ella (6.4).
 
 Con `confirm=true` se exige la ficha de la vista previa (`preview_token`). Los registros no incluyen
 montos, porcentajes ni nombres.
@@ -23,7 +24,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from puro_pockets.domain.allocation import pick_source_month, resolve_allocation
-from puro_pockets.domain.balances import pocket_balance
+from puro_pockets.domain.balances import PocketFigures
 from puro_pockets.domain.errors import (
     DomainError,
     PocketAlreadyExists,
@@ -50,10 +51,17 @@ from puro_pockets.domain.rebalance import (
     rebalance_remove,
     validate_share,
 )
-from puro_pockets.services.ledger_core import BehaviorName, LedgerCore, logger
-from puro_pockets.services.records import NewPocket, Operation, OperationTaken
+from puro_pockets.services.ledger_core import BehaviorName, LedgerCore, LedgerData, logger
+from puro_pockets.services.records import LedgerSnapshot, NewPocket, Operation, OperationTaken
 
 NEW = "__bolsa_nueva__"  # clave de la bolsa que aún no existe
+
+
+def _require_empty(figures: PocketFigures) -> None:
+    """RN-18: saldo (acumulable) o disponible del mes (consumo) exactamente cero."""
+    if figures.amount != 0:
+        kind = "saldo" if figures.pocket.behavior is Behavior.ACUMULABLE else "disponible del mes"
+        raise PocketNotEmpty(kind)
 
 
 class Share(BaseModel):
@@ -460,12 +468,7 @@ class PocketsMixin(LedgerCore):
         pockets = self._store.list_pockets()
         pocket = find_pocket(pockets, name)
         current = Month.of(self._today())
-        balance = pocket_balance(
-            pocket, self._store.allocation_entries(), current, self._store.expense_entries()
-        )
-        if balance.balance != 0:
-            kind = "saldo" if pocket.behavior is Behavior.ACUMULABLE else "disponible del mes"
-            raise PocketNotEmpty(kind)
+        _require_empty(self._data().figures(pocket, current))
         rebalance, months = self._plan_archive(pocket, plan, to_pocket, pairs)
         goals = [
             g.reference
@@ -488,9 +491,20 @@ class PocketsMixin(LedgerCore):
         if not isinstance(token, str) or token.strip() != expected:
             raise PreviewRequired()
         result = preview.model_copy(update={"saved": True, "preview_token": None})
+
+        def verify(snapshot: LedgerSnapshot) -> None:
+            # Con la bolsa bloqueada: una transferencia simultánea hacia ella no la deja con dinero
+            data = LedgerData(snapshot.entries, snapshot.expenses, snapshot.transfers)
+            _require_empty(data.figures(pocket, current))
+
         try:
             response = self._store.archive_pocket(
-                pocket.id, self._now(), months, operation, lambda: result.model_dump(mode="json")
+                pocket.id,
+                self._now(),
+                months,
+                operation,
+                lambda: result.model_dump(mode="json"),
+                verify,
             )
         except OperationTaken:
             return ArchivePocketResult.model_validate(self._after_race(operation))

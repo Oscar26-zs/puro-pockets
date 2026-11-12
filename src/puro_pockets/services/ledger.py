@@ -1,5 +1,7 @@
 """Casos de uso de los movimientos: salario, gastos, anulación, categorías y consultas (Hito 5);
-extras y gastos fijos (Hito 6, en `services/extras.py` y `services/recurring.py`).
+extras y gastos fijos (Hito 6, en `services/extras.py` y `services/recurring.py`); bolsas flexibles
+y metas (Hito 7); transferencias (Hito 8, en `services/transfers.py`). Las cifras de cada bolsa
+salen siempre de `domain.balances.pocket_figures` (9.1, 11.1, 11.2).
 
 Las reglas viven en `domain/`; aquí se orquestan el almacén, el reloj y la idempotencia. El almacén
 es síncrono, así que sus llamadas corren en un hilo. Las respuestas son modelos que las tools
@@ -9,7 +11,6 @@ resultado original en un reintento. Los registros nunca incluyen montos ni descr
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from functools import partial
@@ -26,11 +27,8 @@ from puro_pockets.domain.balances import (
     AllocationEntry,
     ExpenseEntry,
     IncomeKind,
-    accumulated_balance,
-    assigned,
-    percent_used,
+    PocketFigures,
     pocket_balance,
-    spent,
 )
 from puro_pockets.domain.categories import (
     UNCLASSIFIED,
@@ -60,6 +58,7 @@ from puro_pockets.domain.ledger import (
 )
 from puro_pockets.domain.money import (
     Converted,
+    Currency,
     convert,
     format_original,
     format_rate,
@@ -67,13 +66,13 @@ from puro_pockets.domain.money import (
 )
 from puro_pockets.domain.months import Month
 from puro_pockets.domain.pockets import (
-    Behavior,
     Pocket,
     find_pocket,
     normalize_name,
     ordered_active,
 )
 from puro_pockets.domain.recurring import RecurringRef, RecurringTemplate, find_recurring
+from puro_pockets.domain.transfers import TransferRef
 from puro_pockets.services.budget import AllocationLine
 from puro_pockets.services.extras import ExtrasMixin
 from puro_pockets.services.flex import PocketsMixin
@@ -83,6 +82,7 @@ from puro_pockets.services.ledger_core import (
     BalanceKindName,
     BehaviorName,
     CurrencyName,
+    LedgerData,
     PocketFigure,
     UnassignedSummary,
     figure,
@@ -101,8 +101,10 @@ from puro_pockets.services.records import (
     OperationTaken,
     RecurringChange,
     StoredOperation,
+    TransferRow,
 )
 from puro_pockets.services.recurring import RecurringMixin
+from puro_pockets.services.transfers import TransfersMixin
 
 __all__ = [
     "AllocationShare",
@@ -156,7 +158,9 @@ class ExpenseResult(BaseModel):
     overspent: bool = Field(description="True si la bolsa quedó en negativo (RN-37).")
     warning: str | None
     available_pockets: list[PocketFigure] = Field(
-        description="Solo con sobregasto: otras bolsas con saldo disponible."
+        description="Solo con sobregasto: otras bolsas con saldo (acumulable) o disponible del mes "
+        "(consumo) mayor que 0, con transferencias incluidas: candidatas para cubrirlo con "
+        "preview_transfer."
     )
     recurring: str | None = Field(
         default=None, description="Gasto fijo pagado con este gasto (F-n), si lo es."
@@ -192,13 +196,25 @@ class BolsaStatus(BaseModel):
     behavior: BehaviorName
     month: str
     assigned: int = Field(description="Asignado por los ingresos del mes (presupuesto original).")
-    transfers_in: int = Field(description="Transferencias recibidas (0 hasta el Hito 8).")
-    transfers_out: int = Field(description="Transferencias enviadas (0 hasta el Hito 8).")
-    adjusted_budget: int = Field(description="Presupuesto ajustado (9.1).")
+    transfers_in: int = Field(description="Transferencias recibidas en el mes.")
+    transfers_out: int = Field(description="Transferencias enviadas en el mes.")
+    adjusted_budget: int = Field(
+        description="Presupuesto ajustado del mes (9.1): asignado + recibidas − enviadas."
+    )
     spent: int = Field(description="Gastado en el mes.")
-    available: int | None = Field(description="Consumo: disponible del mes (11.1).")
-    percent_used: int | None = Field(description="Consumo: % usado, entero hacia abajo.")
-    balance: int | None = Field(description="Acumulable: saldo histórico (11.2).")
+    available: int | None = Field(
+        description="Consumo: disponible del mes (11.1) = ajustado − gastado."
+    )
+    percent_used: int | None = Field(
+        description="Consumo: % usado sobre el presupuesto ajustado, entero hacia abajo."
+    )
+    percent_used_original: int | None = Field(
+        default=None,
+        description="Consumo: % usado sobre el presupuesto original, como referencia (11.1).",
+    )
+    balance: int | None = Field(
+        description="Acumulable: saldo histórico (11.2), que ya incluye todas las transferencias."
+    )
     negative: bool
     goal: BolsaGoal | None = Field(
         default=None, description="Acumulable: su meta activa, si la tiene (Hito 7)."
@@ -208,10 +224,23 @@ class BolsaStatus(BaseModel):
 class SummaryPocket(BaseModel):
     pocket: str
     behavior: BehaviorName
-    assigned: int
+    assigned: int = Field(description="Presupuesto original del mes (lo asignado).")
+    transfers_in: int = Field(default=0, description="Transferencias recibidas en el mes.")
+    transfers_out: int = Field(default=0, description="Transferencias enviadas en el mes.")
+    adjusted_budget: int = Field(
+        default=0, description="Presupuesto ajustado (9.1): asignado + recibidas − enviadas."
+    )
     spent: int
-    available: int | None = Field(description="Consumo: disponible del mes.")
-    balance: int | None = Field(description="Acumulable: saldo actual (todo el historial).")
+    available: int | None = Field(description="Consumo: disponible del mes (ajustado − gastado).")
+    percent_used: int | None = Field(
+        default=None, description="Consumo: % usado sobre el ajustado (con el original aparte)."
+    )
+    percent_used_original: int | None = Field(
+        default=None, description="Consumo: % usado sobre el presupuesto original."
+    )
+    balance: int | None = Field(
+        description="Acumulable: saldo actual (todo el historial, transferencias incluidas)."
+    )
     negative: bool
 
 
@@ -245,7 +274,7 @@ class TopCategoriesResult(BaseModel):
 
 class TransactionItem(BaseModel):
     reference: str
-    type: Literal["gasto", "ingreso"]
+    type: Literal["gasto", "ingreso", "transferencia"]
     kind: str | None = Field(description="Solo ingresos: base, extra o saldo_inicial.")
     date: str
     month: str = Field(description="Gastos: mes calendario; ingresos: mes presupuestario.")
@@ -262,6 +291,13 @@ class TransactionItem(BaseModel):
         default=None, description='Solo ingresos: "pendiente" = extra sin asignar (RN-06).'
     )
     recurring: str | None = Field(default=None, description="Solo gastos: fijo pagado (F-n).")
+    from_pocket: str | None = Field(default=None, description="Solo transferencias: origen.")
+    to_pocket: str | None = Field(default=None, description="Solo transferencias: destino.")
+    reason: str | None = Field(
+        default=None,
+        description="Solo transferencias: cubrir_sobregasto, reasignacion, ajuste o cierre_de_mes.",
+    )
+    note: str | None = Field(default=None, description="Solo transferencias: nota opcional.")
 
 
 class TransactionsResult(BaseModel):
@@ -344,8 +380,9 @@ def _raw_rate(value: object) -> int | str | None:
     return value.strip() if isinstance(value, str) else value
 
 
-class LedgerService(ExtrasMixin, RecurringMixin, PocketsMixin, GoalsMixin):
-    """Casos de uso de movimientos. Los extras (Hito 6) y los gastos fijos viven en mixins."""
+class LedgerService(ExtrasMixin, RecurringMixin, PocketsMixin, GoalsMixin, TransfersMixin):
+    """Casos de uso de movimientos. Extras y gastos fijos (Hito 6), bolsas flexibles y metas
+    (Hito 7) y transferencias (Hito 8) viven en mixins."""
 
     # --- Ingreso base (constitución 5.1; RN-02, RN-03, RN-08, RN-55 a 57) ---
 
@@ -599,17 +636,22 @@ class LedgerService(ExtrasMixin, RecurringMixin, PocketsMixin, GoalsMixin):
             raise DomainError("Falta el monto del gasto.")
         target, chosen = self._expense_target(pockets, request.pocket, request.category, template)
 
-        entries = self._store.allocation_entries()
-        after = [*self._store.expense_entries(), ExpenseEntry(target.id, month, money.amount_crc)]
-        balance = pocket_balance(target, entries, month, after)
+        data = self._data()
+        after = LedgerData(
+            data.entries,
+            [*data.expenses, ExpenseEntry(target.id, month, money.amount_crc)],
+            data.transfers,
+        )
+        balance = pocket_balance(target, after.entries, month, after.expenses, after.transfers)
         overspent = balance.balance < 0
         available = []
         warning = None
         if overspent:
+            # RN-37: candidatas para cubrirlo, con las cifras oficiales (transferencias incluidas)
             available = [
                 figure(b)
                 for b in (
-                    pocket_balance(p, entries, month, after)
+                    pocket_balance(p, after.entries, month, after.expenses, after.transfers)
                     for p in ordered_active(pockets)
                     if p.id != target.id
                 )
@@ -620,7 +662,9 @@ class LedgerService(ExtrasMixin, RecurringMixin, PocketsMixin, GoalsMixin):
                 f"La bolsa {target.name} queda en negativo con este gasto. "
                 "El gasto se guardó igual (RN-37) y la bolsa queda marcada hasta cubrirla (RN-38). "
                 + (
-                    f"Bolsas con saldo disponible: {names}."
+                    f"Bolsas con saldo disponible: {names}. Para cubrirlo, propone una "
+                    "transferencia con preview_transfer (motivo cubrir_sobregasto) y espera la "
+                    "aprobación explícita del propietario."
                     if names
                     else "Ninguna otra bolsa tiene saldo disponible."
                 )
@@ -777,16 +821,17 @@ class LedgerService(ExtrasMixin, RecurringMixin, PocketsMixin, GoalsMixin):
     ) -> list[PocketFigure]:
         """RN-59: sin las asignaciones del ingreso, qué bolsas quedan en negativo."""
         lines = self._store.income_lines(income.id)
-        entries = self._store.allocation_entries()
-        expenses = self._store.expense_entries()
+        data = self._data()
         removed = [
             AllocationEntry(line.pocket_id, income.budget_month, -line.amount) for line in lines
         ]
-        after = [*entries, *removed]
+        after = [*data.entries, *removed]
         negatives = []
         for pocket_id in sorted({line.pocket_id for line in lines if line.amount > 0}):
             pocket = pockets[pocket_id]
-            balance = pocket_balance(pocket, after, income.budget_month, expenses)
+            balance = pocket_balance(
+                pocket, after, income.budget_month, data.expenses, data.transfers
+            )
             if balance.balance < 0:
                 negatives.append(figure(balance))
         return negatives
@@ -827,26 +872,22 @@ class LedgerService(ExtrasMixin, RecurringMixin, PocketsMixin, GoalsMixin):
 
     def _bolsa_status(self, pocket: object, month: Month) -> BolsaStatus:
         target = find_pocket(self._store.list_pockets(), pocket)
-        entries = self._store.allocation_entries()
-        expenses = self._store.expense_entries()
-        line = self._pocket_line(target, month, entries, expenses)
-        budget = line.assigned  # sin transferencias: ajustado = original (9.1)
+        figures = self._data().figures(target, month)
         return BolsaStatus(
             pocket=target.name,
             behavior=target.behavior.value,
             month=str(month),
-            assigned=line.assigned,
-            transfers_in=0,
-            transfers_out=0,
-            adjusted_budget=budget,
-            spent=line.spent,
-            available=line.available,
-            percent_used=percent_used(line.spent, budget)
-            if target.behavior is Behavior.CONSUMO
-            else None,
-            balance=line.balance,
-            negative=line.negative,
-            goal=self._bolsa_goal(target.id, line.balance),
+            assigned=figures.assigned,
+            transfers_in=figures.transfers_in,
+            transfers_out=figures.transfers_out,
+            adjusted_budget=figures.adjusted_budget,
+            spent=figures.spent,
+            available=figures.available,
+            percent_used=figures.percent_used,
+            percent_used_original=figures.percent_used_original,
+            balance=figures.balance,
+            negative=figures.negative,
+            goal=self._bolsa_goal(target.id, figures.balance),
         )
 
     def _bolsa_goal(self, pocket_id: int, balance: int | None) -> BolsaGoal | None:
@@ -864,28 +905,20 @@ class LedgerService(ExtrasMixin, RecurringMixin, PocketsMixin, GoalsMixin):
         )
 
     @staticmethod
-    def _pocket_line(
-        pocket: Pocket,
-        month: Month,
-        entries: Sequence[AllocationEntry],
-        expenses: Sequence[ExpenseEntry],
-    ) -> SummaryPocket:
-        got = assigned(entries, pocket.id, month)
-        used = spent(expenses, pocket.id, month)
-        if pocket.behavior is Behavior.CONSUMO:
-            available, balance = got - used, None
-            negative = available < 0
-        else:
-            available, balance = None, accumulated_balance(entries, pocket.id, expenses)
-            negative = balance < 0
+    def _pocket_line(figures: PocketFigures) -> SummaryPocket:
         return SummaryPocket(
-            pocket=pocket.name,
-            behavior=pocket.behavior.value,
-            assigned=got,
-            spent=used,
-            available=available,
-            balance=balance,
-            negative=negative,
+            pocket=figures.pocket.name,
+            behavior=figures.pocket.behavior.value,
+            assigned=figures.assigned,
+            transfers_in=figures.transfers_in,
+            transfers_out=figures.transfers_out,
+            adjusted_budget=figures.adjusted_budget,
+            spent=figures.spent,
+            available=figures.available,
+            percent_used=figures.percent_used,
+            percent_used_original=figures.percent_used_original,
+            balance=figures.balance,
+            negative=figures.negative,
         )
 
     async def get_summary(self, month: object = None) -> SummaryResult:
@@ -894,16 +927,15 @@ class LedgerService(ExtrasMixin, RecurringMixin, PocketsMixin, GoalsMixin):
 
     def _summary(self, month: Month) -> SummaryResult:
         pockets = ordered_active(self._store.list_pockets())
-        entries = self._store.allocation_entries()
-        expenses = self._store.expense_entries()
-        lines = [self._pocket_line(p, month, entries, expenses) for p in pockets]
+        data = self._data()
+        lines = [self._pocket_line(data.figures(p, month)) for p in pockets]
         extras = self._store.extra_income_total(month)
         return SummaryResult(
             month=str(month),
             income_total=self._store.base_income_total(month) + extras,
             extra_income_total=extras,
             unassigned=unassigned_summary(self._store.pending_extras()),
-            expense_total=sum(e.amount for e in expenses if e.month == month),
+            expense_total=sum(e.amount for e in data.expenses if e.month == month),
             pockets=lines,
             negative_pockets=[line.pocket for line in lines if line.negative],
         )
@@ -951,11 +983,11 @@ class LedgerService(ExtrasMixin, RecurringMixin, PocketsMixin, GoalsMixin):
         target_month = None if blank else Month.parse(month)
         size = parse_limit(limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT)
         kind = type.strip().casefold() if isinstance(type, str) and type.strip() else None
-        if kind not in (None, "gasto", "ingreso"):
-            raise DomainError("El tipo debe ser 'gasto' o 'ingreso'.")
+        if kind not in (None, "gasto", "ingreso", "transferencia"):
+            raise DomainError("El tipo debe ser 'gasto', 'ingreso' o 'transferencia'.")
         has_pocket = isinstance(pocket, str) and bool(pocket.strip())
         if has_pocket and kind == "ingreso":
-            raise DomainError("El filtro por bolsa solo aplica a gastos.")
+            raise DomainError("El filtro por bolsa solo aplica a gastos y transferencias.")
         return await self._run(
             partial(
                 self._list_transactions,
@@ -987,6 +1019,10 @@ class LedgerService(ExtrasMixin, RecurringMixin, PocketsMixin, GoalsMixin):
             for exp in self._store.recent_expenses(month, pocket_id, include_voided, size + 1):
                 item = self._expense_item(exp, pocket_names, category_names)
                 rows.append(((exp.expense_date, 1, exp.id), item))
+        if kind in (None, "transferencia"):  # nunca anuladas (RN-43): siempre se listan
+            for row in self._store.list_transfers(month, pocket_id, size + 1):
+                item = self._transfer_item(row, pocket_names)
+                rows.append(((row.transfer_date, 2, row.id), item))
         rows.sort(key=lambda r: r[0], reverse=True)
         return TransactionsResult(
             items=[item for _, item in rows[:size]],
@@ -1036,4 +1072,27 @@ class LedgerService(ExtrasMixin, RecurringMixin, PocketsMixin, GoalsMixin):
             voided=row.voided,
             void_reason=row.void_reason,
             recurring=str(RecurringRef(row.recurring_id)) if row.recurring_id else None,
+        )
+
+    @staticmethod
+    def _transfer_item(row: TransferRow, pocket_names: dict[int, str]) -> TransactionItem:
+        return TransactionItem(
+            reference=str(TransferRef(row.id)),
+            type="transferencia",
+            kind=None,
+            date=row.transfer_date.isoformat(),
+            month=str(row.month),
+            pocket=None,
+            category=None,
+            description=None,
+            currency="CRC",
+            original_amount=format_original(Currency.CRC, row.amount),
+            exchange_rate=None,
+            amount_crc=row.amount,
+            voided=False,
+            void_reason=None,
+            from_pocket=pocket_names.get(row.from_pocket_id),
+            to_pocket=pocket_names.get(row.to_pocket_id),
+            reason=row.reason.value,
+            note=row.note,
         )

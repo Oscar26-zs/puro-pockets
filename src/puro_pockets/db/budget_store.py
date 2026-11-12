@@ -1,4 +1,4 @@
-"""Almacén SQL del presupuesto (SQLAlchemy Core). Tablas de las migraciones 0003 a 0006.
+"""Almacén SQL del presupuesto (SQLAlchemy Core). Tablas de las migraciones 0003 a 0007.
 
 Las lecturas de movimientos ignoran lo anulado (RN-53). Las escrituras del Hito 5 (ingresos base,
 gastos, anulaciones) están en `ledger_store.py`.
@@ -31,7 +31,12 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 
-from puro_pockets.domain.balances import AllocationEntry, ExpenseEntry, IncomeKind
+from puro_pockets.domain.balances import (
+    AllocationEntry,
+    ExpenseEntry,
+    IncomeKind,
+    TransferEntry,
+)
 from puro_pockets.domain.errors import InitialBalanceAlreadyLoaded
 from puro_pockets.domain.goals import Goal, GoalStatus, balance_function, reached
 from puro_pockets.domain.money import Currency
@@ -161,6 +166,19 @@ idempotency_keys = Table(
     Column("tool", Text, nullable=False),
     Column("fingerprint", CHAR(64), nullable=False),
     Column("response", JSONB, nullable=False),
+)
+
+transfers = Table(
+    "transfers",
+    metadata,
+    Column("id", BigInteger, primary_key=True),
+    Column("transfer_date", Date, nullable=False),
+    Column("month", CHAR(7), nullable=False),
+    Column("from_pocket_id", BigInteger, nullable=False),
+    Column("to_pocket_id", BigInteger, nullable=False),
+    Column("amount", BigInteger, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("note", Text),
 )
 
 INITIAL_BALANCE_INDEX = "ux_incomes_single_initial_balance"
@@ -311,6 +329,28 @@ class SqlBudgetStore:
                 ).scalar_one()
             )
 
+    def transfer_entries(self) -> list[TransferEntry]:
+        with self._engine.connect() as conn:
+            return self._read_transfers(conn)
+
+    @staticmethod
+    def _read_transfers(conn: Connection, pocket_ids: Sequence[int] | None = None):
+        query = select(
+            transfers.c.from_pocket_id,
+            transfers.c.to_pocket_id,
+            transfers.c.month,
+            transfers.c.amount,
+        )
+        if pocket_ids is not None:
+            query = query.where(
+                transfers.c.from_pocket_id.in_(pocket_ids)
+                | transfers.c.to_pocket_id.in_(pocket_ids)
+            )
+        return [
+            TransferEntry(r.from_pocket_id, r.to_pocket_id, Month.parse(r.month), r.amount)
+            for r in conn.execute(query).all()
+        ]
+
     # --- Metas: lectura y evaluación de "lograda" (RN-24), dentro de la transacción ---
 
     @staticmethod
@@ -333,7 +373,8 @@ class SqlBudgetStore:
 
     def _settle_goals(self, conn: Connection, on: date) -> list[int]:
         """Pasa a lograda las metas vivas cuyo saldo ya alcanza el objetivo (decide `reached`, con
-        el saldo oficial de 11.2). Se llama en la transacción de cada operación que sube un saldo.
+        el saldo oficial de 11.2, transferencias incluidas). Se llama en la transacción de cada
+        operación que sube un saldo (también una transferencia, Hito 8).
         """
         goals = [g for g in self._read_goals(conn) if g.live]
         if not goals:
@@ -362,8 +403,9 @@ class SqlBudgetStore:
                 )
             ).all()
         ]
+        moved = self._read_transfers(conn, ids)
         done = []
-        for goal_id, day in reached(goals, balance_function(entries, spent), on):
+        for goal_id, day in reached(goals, balance_function(entries, spent, moved), on):
             conn.execute(
                 update(savings_goals)
                 .where((savings_goals.c.id == goal_id) & (savings_goals.c.status == "activa"))

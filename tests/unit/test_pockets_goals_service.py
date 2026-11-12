@@ -216,7 +216,7 @@ async def test_archivar_con_saldo_distinto_de_cero(service, store):
     await service.add_income(90_001, budget_month="2026-11", confirm=True, operation_id="op-sal-n2")
     with pytest.raises(PocketNotEmpty, match="saldo") as exc:
         await service.archive_bolsa("Ahorro")
-    assert "27" not in exc.value.message and "Hito 8" in exc.value.message
+    assert "27" not in exc.value.message and "transfer_between_bolsas" in exc.value.message
     with pytest.raises(PocketNotEmpty, match="disponible del mes"):
         await service.archive_bolsa("Gustos")
 

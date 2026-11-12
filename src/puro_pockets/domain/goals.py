@@ -19,7 +19,14 @@ from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
 
-from puro_pockets.domain.balances import AllocationEntry, ExpenseEntry, accumulated_balance
+from puro_pockets.domain.balances import (
+    AllocationEntry,
+    ExpenseEntry,
+    TransferEntry,
+    accumulated_balance,
+    received,
+    sent,
+)
 from puro_pockets.domain.errors import DomainError
 from puro_pockets.domain.money import MAX_MONEY
 from puro_pockets.domain.months import Month
@@ -113,10 +120,12 @@ def reached(
 
 
 def balance_function(
-    entries: Sequence[AllocationEntry], expenses: Sequence[ExpenseEntry]
+    entries: Sequence[AllocationEntry],
+    expenses: Sequence[ExpenseEntry],
+    transfers: Sequence[TransferEntry] = (),
 ) -> Callable[[int], int]:
-    """Saldo de una bolsa acumulable con la función oficial (11.2)."""
-    return lambda pocket_id: accumulated_balance(entries, pocket_id, expenses)
+    """Saldo de una bolsa acumulable con la función oficial (11.2), transferencias incluidas."""
+    return lambda pocket_id: accumulated_balance(entries, pocket_id, expenses, transfers)
 
 
 @dataclass(frozen=True)
@@ -144,16 +153,20 @@ def net_monthly_change(
     expenses: Sequence[ExpenseEntry],
     pocket_id: int,
     current: Month,
+    transfers: Sequence[TransferEntry] = (),
 ) -> NetChange:
     """RN-28: promedio de la variación neta del saldo en los últimos 3 meses completos.
 
-    Variación de un mes = asignado con ese mes presupuestario − gastado ese mes calendario (las
-    mismas atribuciones que 11.1). Solo cuentan meses completos (anteriores al actual) desde el
-    primero con movimientos de la bolsa. La app entrega los números; la proyección la hace Claude.
+    Variación de un mes = asignado con ese mes presupuestario + transferencias recibidas − enviadas
+    en ese mes − gastado ese mes calendario (las mismas atribuciones que 11.1 y 9.1). Solo cuentan
+    meses completos (anteriores al actual) desde el primero con movimientos de la bolsa. La app
+    entrega los números; la proyección la hace Claude.
     """
-    months = [e.budget_month for e in entries if e.pocket_id == pocket_id] + [
-        e.month for e in expenses if e.pocket_id == pocket_id
-    ]
+    months = (
+        [e.budget_month for e in entries if e.pocket_id == pocket_id]
+        + [e.month for e in expenses if e.pocket_id == pocket_id]
+        + [t.month for t in transfers if pocket_id in (t.from_pocket_id, t.to_pocket_id)]
+    )
     if not months:
         return NetChange(0, None, False)
     first = min(months)
@@ -167,6 +180,8 @@ def net_monthly_change(
     total = sum(
         sum(e.amount for e in entries if e.pocket_id == pocket_id and e.budget_month == m)
         - sum(e.amount for e in expenses if e.pocket_id == pocket_id and e.month == m)
+        + received(transfers, pocket_id, m)
+        - sent(transfers, pocket_id, m)
         for m in window
     )
     average = total // len(window)

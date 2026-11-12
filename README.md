@@ -537,15 +537,36 @@ sesión del Hito 3.
   cede o recibe) o manual (das el reparto completo). Siempre suman 100.
 - **Desde cuándo:** una bolsa nueva aplica desde el mes siguiente, o desde el actual si lo pides.
   Los repartos ya hechos no cambian.
-- **Archivar:** solo con saldo cero; para vaciar una bolsa con dinero hará falta una transferencia
-  (Hito 8). Una bolsa archivada no se borra, no se reactiva y no recibe gastos ni repartos. Sus
-  metas se archivan con ella.
+- **Archivar:** solo con saldo cero; para vaciar una bolsa con dinero se usa una transferencia
+  (Hito 8). Una bolsa archivada no se borra, no se reactiva y no recibe gastos, repartos ni
+  transferencias. Sus metas se archivan con ella.
 - **Metas:** no tienen dinero propio; su avance es el saldo de la bolsa. Pasan a "lograda" al
   alcanzar el objetivo y se quedan así aunque después gastes. Claude puede estimar una fecha y
   sugerir qué hacer con un excedente, siempre con tu confirmación.
 - **Migración `0006_pockets_goals`:** conserva tus datos del Hito 6. Haz un
   [respaldo](#respaldo-manual-de-la-base) antes de aplicarla. Su downgrade se niega si hay metas o
   bolsas archivadas, salvo con `ALLOW_DESTRUCTIVE_DOWNGRADE=true` (solo en desarrollo).
+
+## Transferencias entre bolsas (Hito 8)
+
+| Tool | Qué hace |
+|---|---|
+| `preview_transfer` | Cómo quedarían las dos bolsas y el efecto en el avance de sus metas (no guarda nada). |
+| `transfer_between_bolsas` | Mueve colones entre bolsas (vista previa, luego `confirm=true` con la ficha). Referencia `T-n`. |
+
+- **Siempre en colones y con la fecha de hoy.** Motivos: `cubrir_sobregasto`, `reasignacion` o
+  `ajuste` (`cierre_de_mes` queda para el Hito 9). Nota opcional de hasta 140 caracteres.
+- **No se mueve más de lo disponible** en el origen: el saldo si es acumulable, el disponible del
+  mes si es de consumo. Desde una bolsa en negativo no se transfiere.
+- **No se editan ni se borran.** Un error se corrige con otra transferencia en sentido contrario.
+- **Presupuesto ajustado:** `get_bolsa_status`, `get_summary` y el contexto de los extras muestran el
+  presupuesto original, lo recibido y lo enviado, el ajustado, lo gastado y lo disponible.
+- **Sobregasto:** cuando un gasto deja una bolsa en negativo, Claude te propone cubrirlo con una
+  transferencia y espera tu aprobación.
+- **Archivar una bolsa con dinero:** primero vacíala con una transferencia (motivo `reasignacion`).
+- **Migración `0007_transfers`:** conserva tus datos del Hito 7. Haz un
+  [respaldo](#respaldo-manual-de-la-base) antes de aplicarla. Su downgrade se niega si hay
+  transferencias, salvo con `ALLOW_DESTRUCTIVE_DOWNGRADE=true` (solo en desarrollo).
 
 ## Estructura
 

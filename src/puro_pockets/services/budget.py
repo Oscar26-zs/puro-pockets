@@ -32,6 +32,7 @@ from puro_pockets.domain.balances import (
     ExpenseEntry,
     IncomeKind,
     PocketBalance,
+    TransferEntry,
     pocket_balance,
 )
 from puro_pockets.domain.errors import InitialBalanceAlreadyLoaded
@@ -91,6 +92,10 @@ class BudgetStore(Protocol):
     def expense_entries(self) -> list[ExpenseEntry]: ...
 
     def expense_total(self) -> int: ...
+
+    def transfer_entries(self) -> list[TransferEntry]:
+        """Todas las transferencias (Hito 8): nunca se anulan (RN-43)."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -209,6 +214,8 @@ class BudgetService:
         pockets = ordered_active(self._store.list_pockets())
         entries = self._store.allocation_entries()
         expenses = self._store.expense_entries()
+        transfers = self._store.transfer_entries()
         return PocketsView(
-            current, tuple(pocket_balance(p, entries, current, expenses) for p in pockets)
+            current,
+            tuple(pocket_balance(p, entries, current, expenses, transfers) for p in pockets),
         )

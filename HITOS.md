@@ -1,6 +1,6 @@
 # Puro Pockets: hoja de ruta por hitos
 
-**Versión:** 0.10 (borrador)
+**Versión:** 0.11 (borrador)
 **Fecha:** 2026-11-09
 **Fuentes de verdad:** reglas en `.specify/memory/constitution.md` (referenciadas como `RN-xx`); técnica en `docs/plan-tecnico.md`.
 **Este documento define:** qué entrega cada hito, en qué orden y cuándo se considera terminado. No repite reglas de negocio ni el esquema de datos: los referencia.
@@ -42,7 +42,7 @@ Las reglas no negociables (datos reales, capa de negocio, invariante de integrid
 | 5 | Ingresos base y gastos | Reparto del salario, gastos, CRC/USD, anulación (**MVP**) | RN-02, 03, 08 (reparto), 31 a 34, 37, 38, 53, 55 a 57, 59 |
 | 6 | Extras y gastos fijos | Reparto de extras recomendado por Claude, gastos fijos | RN-04 a 09, 35, 36 |
 | 7 | Bolsas flexibles y metas | Crear y archivar bolsas con reajuste, metas | RN-13 a 25, 28, 29 |
-| 8 | Transferencias | Mover dinero entre bolsas con registro | RN-39 a 45, 58 |
+| 8 | Transferencias | Mover dinero entre bolsas con registro | RN-39 a 44, 58; completa RN-18 |
 | 9 | Cierre de mes | Déficits, sobrantes y cierre atómico | RN-46 a 52 |
 | 10 | Dashboard | Estadísticas y gráficos | Sección 13 del plan técnico |
 | 11 | Operación y endurecimiento | Respaldos probados, monitoreo, revisión de seguridad | (no funcional) |
@@ -331,13 +331,18 @@ La decisión #11 (una sola meta activa por bolsa) quedó resuelta el 2026-11-11 
 
 **Objetivo:** mover dinero entre bolsas con registro permanente, por ejemplo para cubrir un sobregasto.
 
+RN-58 quedó decidida el 2026-11-11 (constitución 1.0.4). RN-45 está derogada.
+
 ### Entregables
-- **Tabla `transfers`** inmutable, con motivo (RN-39 a 45).
-- **Presupuesto ajustado** frente al original (sección 9.1).
-- **Vista previa con aviso del efecto sobre metas** (RN-58).
-- **Corrección de errores** mediante transferencia inversa (RN-43).
-- **Archivado de bolsas** completado: mover el saldo a otra bolsa permite archivarla (RN-18).
+- **Tabla `transfers`** (migración `0007_transfers`, que conserva los datos del Hito 7), con nombres en inglés, motivo y nota; inmutable: CHECK, claves foráneas ON DELETE RESTRICT y disparador que rechaza UPDATE y DELETE (RN-39 a 44, principio 3.4). Siempre en colones, con la fecha de hoy y el mes de esa fecha; hasta el Hito 9 todos los meses están abiertos.
+- **Transferir con vista previa:** `preview_transfer` no guarda nada; `transfer_between_bolsas` con `confirm=true` exige la ficha de la vista previa y guarda en una transacción que bloquea las dos bolsas y vuelve a validar lo disponible (RN-41, RN-42). Referencia `T-n`; `list_transactions` las incluye.
+- **Presupuesto ajustado** frente al original (sección 9.1) en `get_bolsa_status`, `get_summary` y `get_allocation_context`, con una sola función de cálculo; % usado sobre el ajustado y el original como referencia.
+- **Vista previa con aviso del efecto sobre metas** (RN-58); las metas se evalúan en la transacción de la transferencia (RN-24).
+- **Sobregasto (RN-37):** la advertencia lista las bolsas con disponible o saldo según los cálculos nuevos y guía hacia `preview_transfer`.
+- **Corrección de errores** mediante transferencia inversa (RN-43); no hay tools para anular ni editar.
+- **Archivado de bolsas** completado: mover el saldo a otra bolsa permite archivarla (RN-18); el error lo indica sin montos.
 - **Pruebas pendientes del Hito 7** que se completan aquí: (1) una bolsa con saldo se vacía con una transferencia y luego `archive_bolsa` la archiva; (2) una bolsa de consumo con disponible del mes se vacía igual y se archiva; (3) archivar una bolsa acumulable con meta activa tras vaciarla archiva la meta; (4) la vista previa de la transferencia avisa el efecto sobre la meta (RN-58).
+- **Invariante** (sección 11.4): las transferencias no crean ni destruyen dinero (200 conjuntos sintéticos).
 - **Tools:** `preview_transfer`, `transfer_between_bolsas`.
 
 ### Prompt para /speckit-specify
@@ -349,6 +354,10 @@ La decisión #11 (una sola meta activa por bolsa) quedó resuelta el 2026-11-11 
 - Mover dinero fuera de una bolsa con meta activa muestra el efecto en el avance.
 - La prueba del invariante sigue pasando con transferencias.
 - Puedes archivar una bolsa tras vaciarla con una transferencia.
+- Dos transferencias simultáneas no sobregiran el origen (prueba de concurrencia contra Postgres).
+- Una transferencia no se puede editar ni borrar, ni desde las tools ni directamente en la base.
+- Claude no confirma una transferencia sin mostrarte la vista previa y esperar tu aprobación explícita.
+- La migración conserva los datos del Hito 7 y su downgrade está protegido.
 
 ---
 
@@ -436,3 +445,4 @@ La decisión #11 (una sola meta activa por bolsa) quedó resuelta el 2026-11-11 
 | 0.8 | 2026-11-10 | Se quita de la sección 3 la decisión #12 (resuelta; constitución 1.0.1). Hito 5: tablas con nombres en inglés (`incomes`, `expenses`, `idempotency_keys`) y migración que conserva los datos del Hito 4; tools `preview_income` (principio 3.2), `create_category` y `list_categories`; anulación del saldo inicial; RN-59 pasa del Hito 8 al Hito 5 en la vista general (sus entregables ya la citaban) y se agregan RN-02, 03 y 08 por el reparto del salario; dos criterios más en "Terminado cuando" (USD sin tipo de cambio; migración y downgrade). |
 | 0.9 | 2026-11-11 | Hito 6: entregables con la migración `0005_extras_recurring` (que conserva los datos del Hito 5), contexto con solo agregados, ficha de vista previa e instrucciones del servidor, gastos fijos con historial de monto y pago con `add_expense`, "sin asignar" en resumen y listado, invariante extendido. Se quita la cuestión de `/speckit-clarify` (decidida por el propietario: gastos fijos bajo demanda). Cuatro criterios más en "Terminado cuando" (aprobación explícita, pago de fijo en USD, migración y downgrade, invariante). |
 | 0.10 | 2026-11-11 | Se quita de la sección 3 la decisión #11 (resuelta; constitución 1.0.3). Hito 7: entregables con la migración `0006_pockets_goals` (conserva los datos del Hito 6), reajuste que escribe el conjunto completo del mes, archivado que redistribuye el mes actual y los futuros, metas evaluadas en cada operación que sube un saldo, metas en el contexto del extra; reglas de la vista general y del entregable de metas ajustadas (RN-26 y 27 derogadas, RN-30 resuelta); cuatro criterios más en "Terminado cuando". Hito 8: pruebas pendientes del archivado de bolsas con saldo. |
+| 0.11 | 2026-11-11 | Hito 8: RN-58 decidida (constitución 1.0.4); vista general sin RN-45 (derogada) y con RN-18 completada; entregables con la migración `0007_transfers` (conserva los datos del Hito 7), tabla inmutable en inglés, vista previa con ficha, bloqueo de las dos bolsas, presupuesto ajustado con una sola función, advertencia de sobregasto con los cálculos nuevos e invariante con transferencias; cuatro criterios más en "Terminado cuando" (concurrencia, inmutabilidad, aprobación explícita, migración y downgrade). |

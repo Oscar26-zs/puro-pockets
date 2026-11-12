@@ -72,13 +72,13 @@ class MovementVoided(DomainError):
 
 
 class PreviewRequired(DomainError):
-    """confirm=true exige la ficha de una vista previa con exactamente esos porcentajes."""
+    """confirm=true exige la ficha de una vista previa con exactamente esos datos."""
 
-    def __init__(self) -> None:
+    def __init__(self, subject: str = "porcentajes") -> None:
         super().__init__(
-            "Antes de confirmar, pide la vista previa (confirm=false) con estos mismos "
-            "porcentajes, muéstrala al propietario y, con su aprobación explícita, confirma con "
-            "el preview_token que devuelve."
+            f"Antes de confirmar, pide la vista previa (confirm=false) con estos mismos {subject}, "
+            "muéstrala al propietario y, con su aprobación explícita, confirma con el "
+            "preview_token que devuelve."
         )
 
 
@@ -116,8 +116,10 @@ class PocketNotEmpty(DomainError):
 
     def __init__(self, kind: str) -> None:
         super().__init__(
-            f"No se puede archivar: su {kind} no es cero (RN-18). Primero hay que mover ese dinero "
-            "a otra bolsa con una transferencia, que llega en el Hito 8."
+            f"No se puede archivar: su {kind} no es cero (RN-18). Primero mueve ese dinero a otra "
+            "bolsa con una transferencia (preview_transfer y luego transfer_between_bolsas, motivo "
+            "reasignacion); si está en negativo, cúbrela antes con una transferencia hacia ella. "
+            "Después vuelve a pedir el archivado."
         )
 
 
@@ -155,4 +157,41 @@ class MovementTouchesArchivedPocket(DomainError):
         super().__init__(
             f"El movimiento {reference} afecta a una bolsa archivada: anularlo cambiaría el saldo "
             "de una bolsa que debe quedar en cero (RN-18)."
+        )
+
+
+class TransferSamePocket(DomainError):
+    """RN-41: el origen y el destino de una transferencia son distintos."""
+
+    def __init__(self) -> None:
+        super().__init__("El origen y el destino de una transferencia deben ser bolsas distintas.")
+
+
+class TransferExceedsAvailable(DomainError):
+    """RN-42: no se mueve más de lo disponible en el origen."""
+
+    def __init__(self, pocket: str, kind: str) -> None:
+        super().__init__(
+            f"El monto supera el {kind} de la bolsa '{pocket}': no se puede mover más de lo "
+            "disponible en el origen (RN-42). Consulta get_bolsa_status y usa un monto menor."
+        )
+
+
+class TransferFromNegative(DomainError):
+    """RN-42: una bolsa en negativo no tiene nada disponible para mover."""
+
+    def __init__(self, pocket: str, kind: str) -> None:
+        super().__init__(
+            f"La bolsa '{pocket}' tiene su {kind} en negativo: no se puede transferir desde ella "
+            "(RN-42). Primero cúbrela con una transferencia hacia ella."
+        )
+
+
+class TransfersAreFinal(DomainError):
+    """RN-43: las transferencias no se editan ni se borran."""
+
+    def __init__(self, reference: str) -> None:
+        super().__init__(
+            f"La transferencia {reference} no se anula ni se edita (RN-43). Para corregirla, "
+            "registra otra transferencia en sentido contrario."
         )

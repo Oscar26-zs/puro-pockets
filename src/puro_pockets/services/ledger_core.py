@@ -9,17 +9,25 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Literal, TypeVar
 
 import anyio
 from pydantic import BaseModel, Field
 
-from puro_pockets.domain.balances import PocketBalance
+from puro_pockets.domain.balances import (
+    AllocationEntry,
+    ExpenseEntry,
+    PocketBalance,
+    PocketFigures,
+    TransferEntry,
+    pocket_figures,
+)
 from puro_pockets.domain.errors import DomainError, IdempotencyConflict
 from puro_pockets.domain.money import Currency, RateRange, format_original
 from puro_pockets.domain.months import Month
-from puro_pockets.domain.pockets import is_plain_int
+from puro_pockets.domain.pockets import Pocket, is_plain_int
 from puro_pockets.domain.recurring import PendingRecurring, pending_in_month
 from puro_pockets.services.records import IncomeRow, LedgerStore, Operation
 
@@ -83,6 +91,19 @@ def unassigned_summary(pending: list[IncomeRow]) -> UnassignedSummary:
     )
 
 
+@dataclass(frozen=True)
+class LedgerData:
+    """Repartos, gastos y transferencias vigentes, leídos una vez por consulta."""
+
+    entries: list[AllocationEntry]
+    expenses: list[ExpenseEntry]
+    transfers: list[TransferEntry]
+
+    def figures(self, pocket: Pocket, month: Month) -> PocketFigures:
+        """Las cifras oficiales de la bolsa (9.1, 11.1, 11.2): siempre `pocket_figures`."""
+        return pocket_figures(pocket, month, self.entries, self.expenses, self.transfers)
+
+
 class LedgerCore:
     def __init__(
         self,
@@ -95,6 +116,13 @@ class LedgerCore:
         self._today = today
         self._rates = rate_range
         self._now = now or (lambda: datetime.now(UTC))
+
+    def _data(self) -> LedgerData:
+        return LedgerData(
+            self._store.allocation_entries(),
+            self._store.expense_entries(),
+            self._store.transfer_entries(),
+        )
 
     async def _run(self, fn: Callable[[], T]) -> T:
         return await anyio.to_thread.run_sync(fn)
