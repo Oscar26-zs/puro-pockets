@@ -607,8 +607,9 @@ sesión del Hito 3.
 Página web **privada y de solo lectura** con tus cifras: resumen del mes, bolsas y metas,
 movimientos con filtros, gasto por categoría, evolución de 6 meses y gastos fijos. Muestra lo mismo
 que Claude (usa las mismas consultas que las tools). La sirve el servicio `dashboard` de Compose
-(API en `/api` y la página), que **no pasa por el túnel de Cloudflare**: solo se llega por tu red
-privada. Contrato y decisiones: [specs/010-dashboard/plan.md](specs/010-dashboard/plan.md) y la
+(API en `/api` y la página). Se entra de dos formas: por túnel SSH (local) o desde cualquier lugar por
+`dash.puropockets.space`, siempre detrás de **Cloudflare Access** y de tu contraseña (decisión del
+2026-11-12). Contrato y decisiones: [specs/010-dashboard/plan.md](specs/010-dashboard/plan.md) y la
 sección "Dashboard" de [docs/plan-tecnico.md](docs/plan-tecnico.md).
 
 > Antes de empezar en el homelab: [respaldo manual](#respaldo-manual-de-la-base). Ningún paso
@@ -681,17 +682,58 @@ docker compose up -d --no-build dashboard
 (`puro-pockets-dashboard` es el nombre que Compose da a la imagen del servicio, así que la usa tal
 cual.)
 
-### 5. Entrar por la red privada
+### 5. Entrar por túnel SSH (local)
 
-- **Túnel SSH (sin instalar nada):** con `DASHBOARD_BIND_IP=127.0.0.1`, desde tu PC:
-  `ssh -N -L 8080:127.0.0.1:8080 <usuario>@<homelab>` y abre `http://127.0.0.1:8080`. Funciona con
-  `DASHBOARD_COOKIE_SECURE=true` (el navegador trata `127.0.0.1` como seguro).
-- **Tailscale:** con `DASHBOARD_BIND_IP=<IP de Tailscale del homelab>` y
-  `DASHBOARD_COOKIE_SECURE=false` (es `http`; el tráfico ya va cifrado por Tailscale), abre
-  `http://<IP de Tailscale>:8080` desde un equipo de tu tailnet. Para el celular, instala Tailscale
-  en él.
-- Nunca publiques el puerto en `0.0.0.0` ni en una IP pública, y no agregues el dashboard al túnel
-  de Cloudflare: `mcp.puropockets.space` no sirve `/` ni `/api` (hay una prueba que lo verifica).
+Con `DASHBOARD_BIND_IP=127.0.0.1`, desde **tu PC** (no desde el homelab), con el mismo comando con el
+que entras al homelab más el túnel (`DASHBOARD_PORT` es el puerto del homelab, aquí 8081):
+
+```powershell
+ssh tostar@192.168.100.230 -N -L 8080:127.0.0.1:8081
+```
+
+La ventana se queda quieta (es el túnel abierto); abre `http://127.0.0.1:8080`. Funciona con
+`DASHBOARD_COOKIE_SECURE=true` (el navegador trata `127.0.0.1` como seguro). Ctrl+C lo cierra.
+
+### 6. Entrar desde cualquier lugar (Cloudflare + Access)
+
+Dos capas: **Cloudflare Access** (solo tu correo, con un código de un solo uso) y después tu
+contraseña. El dashboard comprueba él mismo el token de Access en cada petición que llega por
+Cloudflare: si falta, venció o es de otra aplicación, responde 403 aunque el panel esté mal
+configurado. Haz los pasos **en este orden** (Access antes que el nombre público):
+
+1. **Equipo de Zero Trust.** En el panel de Cloudflare → Zero Trust → Settings, anota el *team
+   domain*: `<equipo>.cloudflareaccess.com` (si es la primera vez, elige un nombre y el plan Free).
+2. **Método de inicio de sesión.** Zero Trust → Settings → Authentication: deja activo *One-time PIN*.
+3. **Aplicación de Access.** Zero Trust → Access → Applications → *Add an application* →
+   *Self-hosted*:
+   - Dominio: `dash.puropockets.space`. Duración de la sesión: 24 h.
+   - Política: *Allow*, regla *Include → Emails* con **solo tu correo**.
+   - Guarda y, en la pestaña *Overview* de la aplicación, copia el **Application Audience (AUD) Tag**.
+4. **`.env` del homelab** (los tres juntos):
+   ```bash
+   DASHBOARD_PUBLIC_HOSTNAME=dash.puropockets.space
+   CF_ACCESS_TEAM_DOMAIN=<equipo>.cloudflareaccess.com
+   CF_ACCESS_AUD=<el AUD Tag>
+   DASHBOARD_COOKIE_SECURE=true
+   ```
+   y `docker compose up -d dashboard`. El registro debe decir "Publicado por Cloudflare en
+   dash.puropockets.space, con Cloudflare Access obligatorio".
+5. **Nombre público del túnel.** Zero Trust → Networks → Tunnels → tu túnel → *Public hostname* →
+   *Add*: subdominio `dash`, dominio `puropockets.space`, servicio **HTTP** `dashboard:8080` (el
+   nombre del servicio de Compose y su puerto interno, no el 8081). No cambies el *HTTP Host Header*.
+6. **Prueba:** abre `https://dash.puropockets.space` → Cloudflare te pide tu correo y el código →
+   la pantalla «Qué dicha verte» → tu contraseña.
+
+Comprobaciones:
+
+- Desde otro navegador o en incógnito, con otro correo: Cloudflare no envía código o rechaza.
+- `curl -s -o /dev/null -w "%{http_code}\n" https://dash.puropockets.space/api/summary` (sin pasar
+  Access) → `302` hacia el inicio de sesión de Cloudflare, nunca datos.
+- `https://mcp.puropockets.space/` sigue respondiendo 404.
+- Nunca publiques el puerto del dashboard en `0.0.0.0` ni en una IP pública, y no uses `tailscale
+  funnel` ni otro proxy sin Access.
+
+Para quitar la publicación: borra el nombre público del túnel y vacía las tres variables.
 
 Entra con la contraseña del propietario. La sesión dura 12 horas; «Salir» la cierra. Tras 5
 contraseñas incorrectas desde la misma IP, el inicio de sesión se bloquea 15 minutos.
@@ -703,6 +745,8 @@ contraseñas incorrectas desde la misma IP, el inicio de sesión se bloquea 15 m
 - Sin CDN, fuentes externas ni analíticas: la página no hace peticiones a otros sitios.
 - Los registros del servicio no tienen montos, notas, descripciones ni nombres de metas.
 - Rotar `DASHBOARD_SESSION_SECRET` cierra todas las sesiones abiertas.
+- Por Cloudflare, el límite de intentos cuenta por la IP real del cliente (`CF-Connecting-IP`).
+- Cloudflare ve el tráfico del dashboard (igual que el del MCP): lo aceptaste al publicarlo así.
 
 ### Desarrollo del frontend (en la PC)
 

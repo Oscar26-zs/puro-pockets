@@ -1,6 +1,6 @@
 # Puro Pockets: hoja de ruta por hitos
 
-**Versión:** 0.13 (borrador)
+**Versión:** 0.14 (borrador)
 **Fecha:** 2026-11-09
 **Fuentes de verdad:** reglas en `.specify/memory/constitution.md` (referenciadas como `RN-xx`); técnica en `docs/plan-tecnico.md`.
 **Este documento define:** qué entrega cada hito, en qué orden y cuándo se considera terminado. No repite reglas de negocio ni el esquema de datos: los referencia.
@@ -63,7 +63,7 @@ Las reglas no negociables (datos reales, capa de negocio, invariante de integrid
 | 7 | Bolsas flexibles y metas | Crear y archivar bolsas con reajuste, metas | RN-13 a 25, 28, 29 |
 | 8 | Transferencias | Mover dinero entre bolsas con registro | RN-39 a 44, 58; completa RN-18 |
 | 9 | Cierre de mes | Déficits, sobrantes, cierre atómico y meses cerrados | RN-44, 46 a 53, 58; 6.5 |
-| 10 | Dashboard | Estadísticas y gráficos, de solo lectura y en red privada | Sección 13 del plan técnico; muestra RN-06, 38, 48 a 50 y 53 |
+| 10 | Dashboard | Estadísticas y gráficos, de solo lectura, detrás de Cloudflare Access | Sección 13 del plan técnico; muestra RN-06, 38, 48 a 50 y 53 |
 | 11 | Operación y endurecimiento | Respaldos probados, monitoreo, revisión de seguridad | (no funcional) |
 
 El **MVP usable** llega al terminar el Hito 5: puedes cargar tu saldo inicial, registrar tu salario y tus gastos desde Claude y ver el estado de cada bolsa.
@@ -431,9 +431,11 @@ RN-51 quedó decidida el 2026-11-11 (constitución 1.0.5).
 - **Componentes** de la sección 13.2 del plan técnico (`docs/plan-tecnico.md`) con el diseño de
   `docs/dashboard.md`: tarjetas, progreso por bolsa (original vs. ajustado), dona por categoría,
   evolución mensual, tabla con filtros, fijos pagados y pendientes, tarjeta por meta, alertas.
-- **Acceso privado:** servicio `dashboard` de Compose (perfil `dashboard`) publicado en `127.0.0.1`
-  o en una IP privada (`DASHBOARD_BIND_IP`); se entra por túnel SSH o Tailscale. No pasa por el
-  túnel de Cloudflare ni por el MCP.
+- **Acceso:** servicio `dashboard` de Compose (perfil `dashboard`) en `127.0.0.1` (túnel SSH) y,
+  por decisión del propietario del 2026-11-12, también en `dash.puropockets.space` por el túnel de
+  Cloudflare, **siempre detrás de Cloudflare Access** (solo el correo del propietario). El dashboard
+  verifica el token de Access en cada petición que llega por Cloudflare (403 sin él) y luego pide la
+  contraseña. El MCP no sirve rutas del dashboard.
 - **Autenticación propia del dashboard:** la contraseña del propietario (argon2 del Hito 3), cookie
   firmada HttpOnly y SameSite=Strict de 12 h, límite de intentos; sin tablas nuevas.
 - **Rol de solo lectura** (`scripts/create_dashboard_role.sql`) sin acceso a `oauth_*`; la API se
@@ -448,8 +450,10 @@ RN-51 quedó decidida el 2026-11-11 (constitución 1.0.5).
 - Los totales del dashboard coinciden con `get_summary` para el mismo mes, y bolsas, metas y
   movimientos con `get_bolsa_status`, `get_goal_progress` y `list_transactions` (prueba con las
   tools por MCP).
-- El dashboard no es accesible desde internet público: `mcp.puropockets.space` no sirve `/` ni
-  `/api`, y el puerto solo se publica en `127.0.0.1` o en una IP privada.
+- Desde internet solo se llega al dashboard por `dash.puropockets.space` y pasando Cloudflare
+  Access: sin un token de Access válido (vencido, de otra aplicación, de otro equipo o mal firmado),
+  todo responde 403, incluso el inicio de sesión; `mcp.puropockets.space` no sirve `/` ni `/api`; el
+  puerto solo se publica en `127.0.0.1`.
 - Los movimientos anulados se distinguen y no suman.
 - Los totales se muestran en colones.
 - Sin sesión, todo `/api` responde 401; otro verbo, 405; la contraseña mala y el exceso de intentos
@@ -503,3 +507,4 @@ RN-51 quedó decidida el 2026-11-11 (constitución 1.0.5).
 | 0.11 | 2026-11-11 | Hito 8: RN-58 decidida (constitución 1.0.4); vista general sin RN-45 (derogada) y con RN-18 completada; entregables con la migración `0007_transfers` (conserva los datos del Hito 7), tabla inmutable en inglés, vista previa con ficha, bloqueo de las dos bolsas, presupuesto ajustado con una sola función, advertencia de sobregasto con los cálculos nuevos e invariante con transferencias; cuatro criterios más en "Terminado cuando" (concurrencia, inmutabilidad, aprobación explícita, migración y downgrade). |
 | 0.12 | 2026-11-11 | Nuevo flujo de trabajo por hito desde el Hito 9 (sección 1): Claude escribe `spec.md`, un `plan.md` delgado con todo dentro y un `progreso.md`, hace una autorrevisión contra la constitución e implementa de una vez, sin los comandos de Spec Kit (decisión del propietario, 2026-11-11). Hito 9: RN-51 decidida (constitución 1.0.5); vista general con RN-44, 46 a 53, 58 y 6.5; entregables con la migración `0008_month_closures`, la regla única de mes cerrado para todas las tools, la alerta de cierre pendiente, el ritual en las instrucciones del servidor y el destino sugerido; seis criterios más en "Terminado cuando". Se quitan de los Hitos 5 y 8 las frases "todos los meses están abiertos". |
 | 0.13 | 2026-11-12 | Se quita de la sección 3 la decisión del framework de la API del dashboard (resuelta por el propietario: FastAPI; registrada en `docs/plan-tecnico.md` v0.12). Hito 10: entregables con la referencia de diseño al archivo real (`docs/dashboard.md`), la capa de lectura que reutiliza `services/`, el servicio `dashboard` en red privada, la autenticación propia con la contraseña del Hito 3, el rol de solo lectura comprobado al arrancar, cabeceras y privacidad; vista general con las reglas que muestra; seis criterios más en "Terminado cuando". |
+| 0.14 | 2026-11-12 | Hito 10: el propietario decide publicar el dashboard por el túnel de Cloudflare en `dash.puropockets.space`, siempre detrás de Cloudflare Access y de su contraseña (antes: solo red privada). Entregable de acceso y criterio "no accesible desde internet" ajustados: sin token de Access válido, 403. |

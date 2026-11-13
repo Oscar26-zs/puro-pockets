@@ -3,6 +3,8 @@
 - Solo `GET`, salvo `POST /api/session/login` y `POST /api/session/logout`; otro verbo → 405.
 - Sin sesión, todo `/api` responde 401 (también las rutas que no existen, para no revelarlas).
 - Cabeceras de seguridad en todas las respuestas y `Cache-Control: no-store` en `/api`. Sin CORS.
+- Por Cloudflare (`DASHBOARD_PUBLIC_HOSTNAME`): toda petición que llega por el túnel exige un token
+  válido de Cloudflare Access (403 si no); sin modo público, cualquier petición de Cloudflare → 403.
 - Registros: método, ruta sin consulta, estado y duración. Nunca montos, notas, descripciones ni
   nombres de metas (la consulta puede llevar nombres de bolsa, por eso no se registra).
 - Las cifras salen de `DashboardService`, que reutiliza `LedgerService` (las mismas de las tools).
@@ -25,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from puro_pockets.api.access import ACCESS_COOKIE, ACCESS_HEADER, AccessVerifier
 from puro_pockets.api.session import COOKIE_NAME, SessionManager
 from puro_pockets.domain.auth import LoginRateLimiter
 from puro_pockets.domain.errors import DomainError
@@ -61,6 +64,9 @@ SECURITY_HEADERS = {
     "Permissions-Policy": "camera=(), microphone=(), geolocation=(), interest-cohort=()",
 }
 
+HSTS = "max-age=31536000"
+CLOUDFLARE_HEADERS = ("cf-ray", "cf-connecting-ip", ACCESS_HEADER)
+
 MonthParam = Query(default=None, description="Mes AAAA-MM; por defecto el actual.")
 
 
@@ -90,7 +96,21 @@ def build_app(
     static_dir: Path | None = None,
     health: Callable[[], None] | None = None,
     clock: Callable[[], float] = time.monotonic,
+    public_hostname: str | None = None,
+    access: AccessVerifier | None = None,
 ) -> FastAPI:
+    if (public_hostname is None) != (access is None):
+        raise ValueError("El nombre público y Cloudflare Access van juntos.")
+    public_origin = f"https://{public_hostname}" if public_hostname else None
+
+    def via_cloudflare(request: Request) -> bool:
+        """¿Llegó por el túnel? Por su nombre público o por las cabeceras que agrega Cloudflare.
+        Las peticiones locales (túnel SSH, healthcheck) no traen ninguna de las dos cosas."""
+        host = request.headers.get("host", "").split(":")[0].lower()
+        if public_hostname is not None and host == public_hostname:
+            return True
+        return any(name in request.headers for name in CLOUDFLARE_HEADERS)
+
     app = FastAPI(
         title="Puro Pockets: dashboard",
         docs_url=None,
@@ -106,14 +126,22 @@ def build_app(
         path, method = request.url.path, request.method
         api = _is_api(path)
         allowed = ("POST",) if path in POST_PATHS else ("GET",)
-        if method not in allowed:
-            response: Response = _error(405, "Método no permitido.", {"Allow": ", ".join(allowed)})
+        public = via_cloudflare(request)
+        request.state.via_cloudflare = public
+        token = request.headers.get(ACCESS_HEADER) or request.cookies.get(ACCESS_COOKIE)
+        if public and (access is None or not await access.verify(token)):
+            # Antes que todo lo demás: sin Cloudflare Access válido no se llega ni a la contraseña
+            response: Response = _error(403, "Acceso no autorizado.")
+        elif method not in allowed:
+            response = _error(405, "Método no permitido.", {"Allow": ", ".join(allowed)})
         elif api and path != LOGIN_PATH and not sessions.valid(request.cookies.get(COOKIE_NAME)):
             response = _error(401, "Inicia sesión para ver el dashboard.")
         else:
             response = await call_next(request)
         for name, value in SECURITY_HEADERS.items():
             response.headers.setdefault(name, value)
+        if public:
+            response.headers["Strict-Transport-Security"] = HSTS
         if (
             api
             or path in ("/", "/index.html")
@@ -165,11 +193,15 @@ def build_app(
     @app.post(LOGIN_PATH, status_code=204)
     async def login(request: Request) -> Response:
         origin = request.headers.get("origin")
-        if origin is not None and origin != f"{request.url.scheme}://{request.url.netloc}":
+        allowed_origins = {f"{request.url.scheme}://{request.url.netloc}", public_origin}
+        if origin is not None and origin not in allowed_origins:
             return _error(403, "Origen no permitido.")
         if not request.headers.get("content-type", "").startswith("application/json"):
             return _error(400, "Solicitud inválida.")
-        key = request.client.host if request.client else "desconocido"
+        # Por Cloudflare, la IP real del cliente viene en CF-Connecting-IP (ya pasó por Access)
+        public = request.state.via_cloudflare
+        forwarded = request.headers.get("cf-connecting-ip") if public else None
+        key = forwarded or (request.client.host if request.client else "desconocido")
         wait = limiter.retry_after(key, clock())
         if wait > 0:
             logger.warning("Inicio de sesión del dashboard bloqueado por intentos")

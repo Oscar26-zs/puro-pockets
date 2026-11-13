@@ -1,6 +1,6 @@
 # Plan técnico de Puro Pockets
 
-**Versión:** 0.12
+**Versión:** 0.13
 **Fecha:** 2026-11-12
 **Capa:** 2 en la gobernanza de `.specify/memory/constitution.md`. Decide la técnica; si contradice a
 la constitución, gana la constitución y se corrige este documento.
@@ -506,9 +506,21 @@ reglas).
 - **Privacidad:** sin CDN, fuentes externas (pila del sistema) ni analíticas; datos solo en
   memoria; en la URL solo `?month=`; en `localStorage` solo el tema (`pp-theme`). La compilación no
   incluye los datos de ejemplo (`web/scripts/check-bundle.mjs`).
-- **Acceso privado:** puerto en `${DASHBOARD_BIND_IP:-127.0.0.1}:${DASHBOARD_PORT:-8080}`; se entra
-  por túnel SSH o Tailscale (README). El túnel de Cloudflare solo enruta `mcp.puropockets.space` a
-  `mcp:8000`; el MCP no sirve `/` ni `/api` (prueba). Perfil `dashboard` en Compose.
+- **Acceso [DECIDIDO por el propietario, 2026-11-12]:** dos caminos.
+  - **Local:** puerto en `${DASHBOARD_BIND_IP:-127.0.0.1}:${DASHBOARD_PORT:-8080}`, por túnel SSH.
+  - **Público:** el túnel de Cloudflare enruta `dash.puropockets.space` a `http://dashboard:8080` por
+    la red interna (nombre público del túnel, configurado en el panel), con una aplicación de
+    **Cloudflare Access** delante (política: solo el correo del propietario; código de un solo uso).
+    Variables `DASHBOARD_PUBLIC_HOSTNAME`, `CF_ACCESS_TEAM_DOMAIN` y `CF_ACCESS_AUD` (las tres o
+    ninguna). `api/access.py` verifica en cada petición que llega por Cloudflare (por su nombre o por
+    las cabeceras `CF-Ray`, `CF-Connecting-IP` o `Cf-Access-Jwt-Assertion`) el JWT de Access: RS256
+    con las claves de `https://<equipo>.cloudflareaccess.com/cdn-cgi/access/certs` (en caché),
+    audiencia, emisor, `exp` e `iat`; sin token válido o sin claves, 403 antes de cualquier otra
+    cosa (falla cerrada). Sin modo público, toda petición con esas cabeceras → 403, así un nombre
+    agregado por error en el panel no expone nada. Por Cloudflare, el límite de intentos usa
+    `CF-Connecting-IP`, el inicio de sesión acepta el origen `https://<nombre público>` y se agrega
+    `Strict-Transport-Security`. La cookie va con `Secure=true`.
+  - El MCP no sirve `/` ni `/api` (prueba). Perfil `dashboard` en Compose.
 - **Registros:** una línea por petición (método, ruta sin consulta, estado, duración); sin registro
   de acceso de uvicorn; errores internos solo con el tipo. Nunca montos, notas, descripciones,
   nombres de metas ni la consulta.
@@ -954,3 +966,4 @@ inglés las tablas de los Hitos 4 a 6 (`pockets`, `categories`, `budget_month_al
 | 0.10 | 2026-11-11 | Hito 8: sección "Transferencias (Hito 8)" (una sola función de cálculo para 9.1, 11.1 y 11.2, vista previa con efecto en metas y ficha, validaciones, bloqueo de las dos bolsas y nueva validación dentro de la transacción, archivado con bloqueo, inmutabilidad en la base, referencias `T-`, sobregasto guiado hacia la transferencia, idempotencia, downgrade protegido y registros); esquema de `transfers` en inglés con ON DELETE RESTRICT, nota ≤ 140 e índices (migración `0007_transfers`); catálogo y regla 12.2.2 actualizados; validaciones y tabla concepto → tabla con transferencias. |
 | 0.11 | 2026-11-11 | Hito 9: sección "Cierre de mes (Hito 9)" (regla única de mes cerrado usada por todas las escrituras y comprobada dentro de la transacción, qué mes se cierra y en qué orden, vista previa con datos y con propuesta, validación de 10.1, 10.2, RN-47, RN-50 y RN-52, ficha en dos mitades, transacción con bloqueo consultivo de cierres y bolsas bloqueadas, mes actual cerrado, cierre pendiente, ritual RN-51, destino sugerido 6.5, sin reapertura, CHECK del mes de las transferencias, idempotencia, downgrade y registros); esquema de `month_closures` y `closure_adjustments` en inglés (migración `0008_month_closures`); catálogo con `preview_month_close`, `close_month` y `set_surplus_destination`; regla 12.2.2, validaciones y tabla concepto → tabla actualizadas; se quitan las frases "hasta el Hito 9 todos los meses están abiertos". |
 | 0.12 | 2026-11-12 | Hito 10: API del dashboard en FastAPI (decisión del propietario; deja de estar [ABIERTO]) y dashboard [DECIDIDO]; sección "Dashboard (Hito 10)" (arquitectura, una sola fuente de cifras, contrato de la API, autenticación con cookie firmada y la contraseña del Hito 3, rol de solo lectura comprobado al arrancar, cabeceras, privacidad, acceso privado, registros); sección 13.3 con las fórmulas [PROPUESTO] de ahorrado, disponible, fecha estimada, alertas y evolución; arquitectura de la sección 16 actualizada; medición de memoria del servicio `dashboard`. Sin cambios de esquema. |
+| 0.13 | 2026-11-12 | Hito 10: el propietario decide publicar el dashboard por el túnel de Cloudflare (`dash.puropockets.space`) detrás de Cloudflare Access; el dashboard verifica el JWT de Access (falla cerrada), rechaza peticiones de Cloudflare sin modo público y usa `CF-Connecting-IP` para el límite de intentos. `pyjwt[crypto]` pasa a dependencia directa. |

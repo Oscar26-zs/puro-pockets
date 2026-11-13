@@ -100,3 +100,26 @@ no lo toca (sin cambios en archivos existentes de `src/`); por la regla de no mo
 anteriores, queda sin corregir. Sugerencia para un hito siguiente: revisar que `archive_bolsa` siga el
 mismo orden de bloqueos que las transferencias ("guardia, bolsas, filas", plan técnico, Hito 9) y
 que la prueba capture cualquier excepción del hilo.
+
+## 5. Publicación por Cloudflare + Access (decisión del 2026-11-12)
+
+### Equipo de desarrollo ✅ Claude
+
+`tests/unit/test_dashboard_cloudflare.py` (**32 pruebas**, tokens firmados con claves RSA de prueba):
+
+| Positivas | Negativas |
+|---|---|
+| con token válido (cabecera o cookie `CF_Authorization`) se llega a la contraseña, que sigue siendo obligatoria (401 sin sesión); el inicio de sesión acepta el origen `https://dash.puropockets.space`; cookie Secure; HSTS; el acceso local (túnel SSH) funciona sin Access; configuración completa | **sin token → 403** en `/`, `/healthz`, `/api/*`, estáticos y en el inicio de sesión con la contraseña correcta (sin cookie); **token vencido, de otra aplicación (AUD), de otro equipo (emisor), firmado con otra clave, HS256, sin `exp` o basura → 403**; **sin claves de Cloudflare (sin red) → 403** (falla cerrada); cabecera de Cloudflare en otro nombre exige Access; **sin modo público, cualquier petición con `CF-Ray`, `CF-Connecting-IP` o `Cf-Access-Jwt-Assertion` → 403**; otro origen en el inicio de sesión → 403; **el límite de intentos cuenta por `CF-Connecting-IP`** (una IP bloqueada no bloquea a otra); configuración incompleta o inválida (sin AUD, sin equipo, equipo con `https://` o fuera de `cloudflareaccess.com`, nombre con esquema) → no arranca |
+
+### Homelab 👤 Propietario
+
+Respaldo con `pg_dump` primero (sección 3). Luego `git pull`, `docker compose build dashboard` y los
+pasos del README, "Dashboard", sección 6 (Access **antes** que el nombre público).
+
+| # | Positiva | Negativa |
+|---|---|---|
+| 1 | El registro dice "Publicado por Cloudflare … con Cloudflare Access obligatorio" | Antes de crear la aplicación de Access, con el nombre público ya puesto: `https://dash.puropockets.space` → 403 «Acceso no autorizado.» (no deberías hacerlo en ese orden, pero si pasa, no se expone nada) |
+| 2 | Desde el celular con datos móviles: correo → código → contraseña → resumen | Con otro correo: Cloudflare no da acceso |
+| 3 | Los totales coinciden con `get_summary` | `curl` sin pasar Access a `/api/summary` → 302 a Cloudflare, nunca datos |
+| 4 | El túnel SSH sigue funcionando | `https://mcp.puropockets.space/` → 404 |
+| 5 | Tras 5 contraseñas malas desde el celular, ese dispositivo queda bloqueado 15 min y la PC no | — |

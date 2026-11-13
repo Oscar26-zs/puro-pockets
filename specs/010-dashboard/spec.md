@@ -24,7 +24,10 @@ de aceptación."
   9.1, 11.1, 11.2). Ningún servicio de lectura escribe.
 - **Servicio `dashboard`** en Compose: API en `/api` y frontend compilado, imagen de varias etapas,
   publicado en `127.0.0.1` por defecto (variable para una IP privada), healthcheck y
-  `restart: unless-stopped`. No pasa por el túnel ni por el MCP.
+  `restart: unless-stopped`. No pasa por el MCP.
+- **Cambio del 2026-11-12 (tras la verificación en el homelab):** el propietario decide publicarlo
+  también por el túnel de Cloudflare en `dash.puropockets.space`, siempre detrás de Cloudflare
+  Access, que el dashboard verifica (403 sin token válido). Reemplaza "no se enruta por el túnel".
 - **Autenticación propia:** verificación argon2 y `scripts/hash_password.py` del Hito 3 con
   `OWNER_PASSWORD_HASH`; cookie firmada (`DASHBOARD_SESSION_SECRET` ≥ 32 bytes), HttpOnly,
   SameSite=Strict, Secure configurable, 12 h; límite de intentos por IP; sin sesión, `/api` → 401.
@@ -59,6 +62,7 @@ de aceptación."
 - P8 **Sesión sin estado en la base:** el cierre de sesión borra la cookie y revoca su identificador
   en memoria; un reinicio olvida las revocaciones (la cookie sigue venciendo a las 12 h). Rotar
   `DASHBOARD_SESSION_SECRET` invalida todas.
+- P10 **Detección de "llegó por Cloudflare"** por el nombre público o por las cabeceras `CF-Ray`, `CF-Connecting-IP` o `Cf-Access-Jwt-Assertion`; sesión de Access configurada en Cloudflare (24 h sugeridas) independiente de las 12 h de la cookie del dashboard.
 - P9 **Paginación** de movimientos: 10 por página, como máximo 10 páginas (tope de 100 de
   `list_transactions`).
 
@@ -129,8 +133,9 @@ Solo el propietario entra, solo desde la red privada.
 
 1. Sin sesión, todo `/api` responde 401; contraseña mala → 401 y, tras 5 fallos, 429.
 2. La cookie es HttpOnly y SameSite=Strict, con Secure según la variable, y vence a las 12 h.
-3. `mcp.puropockets.space` no sirve `/` ni `/api`; el servicio se publica en `127.0.0.1` o en la IP
-   privada indicada.
+3. `mcp.puropockets.space` no sirve `/` ni `/api`; el puerto se publica en `127.0.0.1`.
+4. Por `dash.puropockets.space`, sin un token válido de Cloudflare Access todo responde 403, incluido
+   el inicio de sesión; con token, sigue pidiendo la contraseña.
 
 ### Casos límite
 

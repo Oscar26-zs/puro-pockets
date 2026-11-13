@@ -13,6 +13,7 @@ from functools import partial
 import uvicorn
 from sqlalchemy import Engine, create_engine
 
+from puro_pockets.api.access import AccessVerifier
 from puro_pockets.api.app import build_app
 from puro_pockets.api.config import DashboardSettings, load_dashboard_settings
 from puro_pockets.api.readonly import UnsafeDatabaseRole, ensure_read_only
@@ -58,6 +59,10 @@ def build_from_settings(settings: DashboardSettings, engine: Engine):
         cookie_secure=settings.cookie_secure,
         static_dir=settings.static_dir,
         health=partial(check_database, engine),
+        public_hostname=settings.public_hostname,
+        access=AccessVerifier(settings.access_team_domain, settings.access_audience)
+        if settings.public_hostname and settings.access_team_domain and settings.access_audience
+        else None,
     )
 
 
@@ -87,6 +92,16 @@ def main() -> None:
         settings.cookie_secure,
         settings.app_timezone,
     )
+    if settings.public_hostname:
+        logger.info(
+            "Publicado por Cloudflare en %s, con Cloudflare Access obligatorio (equipo %s)",
+            settings.public_hostname,
+            settings.access_team_domain,
+        )
+        if not settings.cookie_secure:
+            logger.warning("Publicado por Cloudflare con DASHBOARD_COOKIE_SECURE=false: usa true")
+    else:
+        logger.info("Sin nombre público: solo acceso local; peticiones de Cloudflare → 403")
     uvicorn.run(
         build_from_settings(settings, engine),
         host=settings.host,

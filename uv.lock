@@ -664,6 +664,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "mcp" },
     { name = "psycopg", extra = ["binary"] },
+    { name = "pyjwt", extra = ["crypto"] },
     { name = "sqlalchemy" },
     { name = "tzdata" },
 ]
@@ -681,6 +682,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.162.5" },
     { name = "mcp", specifier = "==2.3.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.15.1" },
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "tzdata", specifier = ">=2026.6" },
 ]

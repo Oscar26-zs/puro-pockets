@@ -9,6 +9,7 @@ valores.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,10 @@ class DashboardSettings:
     usd_rate_min: int = 300
     usd_rate_max: int = 1000
     session_ttl: int = SESSION_TTL_SECONDS
+    # Publicación por Cloudflare (decisión del propietario, 2026-11-12): nombre público y Access
+    public_hostname: str | None = None
+    access_team_domain: str | None = None
+    access_audience: str | None = None
 
 
 def _secret(env: Mapping[str, str]) -> bytes:
@@ -56,11 +61,39 @@ def _password_hash(env: Mapping[str, str]) -> str:
     return value
 
 
+_HOSTNAME = re.compile(r"^(?=.{1,253}$)([a-z0-9-]{1,63}\.)+[a-z]{2,63}$")
+
+
+def _public(env: Mapping[str, str]) -> tuple[str | None, str | None, str | None]:
+    """Nombre público y Cloudflare Access: o los tres, o ninguno."""
+    host = env.get("DASHBOARD_PUBLIC_HOSTNAME", "").strip().lower() or None
+    team = env.get("CF_ACCESS_TEAM_DOMAIN", "").strip().lower() or None
+    aud = env.get("CF_ACCESS_AUD", "").strip() or None
+    if host is None:
+        return None, None, None
+    if not _HOSTNAME.match(host):
+        raise ConfigError(
+            "DASHBOARD_PUBLIC_HOSTNAME debe ser un nombre como dash.puropockets.space."
+        )
+    if team is None or aud is None:
+        raise ConfigError(
+            "Con DASHBOARD_PUBLIC_HOSTNAME también son obligatorias CF_ACCESS_TEAM_DOMAIN y "
+            "CF_ACCESS_AUD: el dashboard solo se publica detrás de Cloudflare Access."
+        )
+    if not team.endswith(".cloudflareaccess.com") or not _HOSTNAME.match(team):
+        raise ConfigError(
+            "CF_ACCESS_TEAM_DOMAIN debe ser el dominio del equipo, como "
+            "<equipo>.cloudflareaccess.com (sin https://)."
+        )
+    return host, team, aud
+
+
 def load_dashboard_settings(env: Mapping[str, str] | None = None) -> DashboardSettings:
     """Lee la configuración del dashboard. Si `env` es None, usa las variables del proceso."""
     env = os.environ if env is None else env
     rate_min, rate_max = _rate_range(env)
     static = env.get("DASHBOARD_STATIC_DIR", "").strip()
+    public_hostname, team_domain, audience = _public(env)
     return DashboardSettings(
         database_url=_required(env, "DASHBOARD_DATABASE_URL"),
         session_secret=_secret(env),
@@ -73,4 +106,7 @@ def load_dashboard_settings(env: Mapping[str, str] | None = None) -> DashboardSe
         app_timezone=_timezone(env, "APP_TIMEZONE"),
         usd_rate_min=rate_min,
         usd_rate_max=rate_max,
+        public_hostname=public_hostname,
+        access_team_domain=team_domain,
+        access_audience=audience,
     )

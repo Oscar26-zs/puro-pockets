@@ -94,8 +94,10 @@ services:
   dashboard:
     # Dashboard de solo lectura (Hito 10): API en /api y frontend compilado.
     # Solo arranca con el perfil "dashboard" (COMPOSE_PROFILES=tunnel,dashboard en el homelab).
-    # NO pasa por el túnel de Cloudflare ni por el MCP: se publica en 127.0.0.1 (o en la IP privada
-    # de DASHBOARD_BIND_IP, p. ej. la de Tailscale) y se entra por la red privada.
+    # Local: puerto en 127.0.0.1 (o DASHBOARD_BIND_IP) para el túnel SSH. Público (decisión del
+    # propietario, 2026-11-12): el túnel de Cloudflare llega a http://dashboard:8080 por la red
+    # interna con el nombre DASHBOARD_PUBLIC_HOSTNAME, SIEMPRE detrás de Cloudflare Access; el
+    # dashboard verifica el token de Access y rechaza (403) lo que llegue por Cloudflare sin él.
     build:
       context: .
       dockerfile: Dockerfile.dashboard
@@ -107,6 +109,10 @@ services:
       DASHBOARD_DATABASE_URL: ${DASHBOARD_DATABASE_URL:-}
       DASHBOARD_SESSION_SECRET: ${DASHBOARD_SESSION_SECRET:-}
       DASHBOARD_COOKIE_SECURE: ${DASHBOARD_COOKIE_SECURE:-true}
+      # Publicación por Cloudflare: los tres juntos o ninguno
+      DASHBOARD_PUBLIC_HOSTNAME: ${DASHBOARD_PUBLIC_HOSTNAME:-}
+      CF_ACCESS_TEAM_DOMAIN: ${CF_ACCESS_TEAM_DOMAIN:-}
+      CF_ACCESS_AUD: ${CF_ACCESS_AUD:-}
       # La misma contraseña del propietario (hash argon2 del Hito 3)
       OWNER_PASSWORD_HASH: ${OWNER_PASSWORD_HASH:-}
       DB_CONNECT_TIMEOUT: ${DB_CONNECT_TIMEOUT:-2}
