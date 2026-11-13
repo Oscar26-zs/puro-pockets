@@ -1,4 +1,5 @@
-# Verificación automática en cada push: estilo (ruff) y pruebas unitarias.
+# Verificación automática en cada push: estilo (ruff), pruebas unitarias (incluida la API del
+# dashboard) y, en el job web, lint, tipos y pruebas de componentes del dashboard.
 # Las pruebas de integración necesitan la base levantada y corren en el equipo de desarrollo.
 name: CI
 
@@ -31,3 +32,35 @@ jobs:
 
       - name: Pruebas unitarias
         run: uv run pytest -m "not integration"
+
+  web:
+    # Dashboard (Hito 10): lint, typecheck y pruebas de componentes. Playwright y axe corren en el
+    # equipo de desarrollo (decisión P6 del Hito 10).
+    name: Dashboard (lint, typecheck y componentes)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Instalar dependencias (package-lock.json)
+        run: npm ci --no-audit --no-fund
+
+      - name: Lint (eslint)
+        run: npm run lint
+
+      - name: Tipos (tsc)
+        run: npm run typecheck
+
+      - name: Pruebas de componentes (vitest)
+        run: npm test
+
+      - name: Compilación sin datos de ejemplo
+        run: npm run build

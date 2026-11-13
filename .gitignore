@@ -13,6 +13,8 @@
 *.sql
 # Los .sql versionados (si los hubiera) deben vivir en migrations/
 !migrations/**/*.sql
+# Script del rol de solo lectura del dashboard (Hito 10): sin datos ni contraseñas
+!scripts/create_dashboard_role.sql
 backups/
 
 # --- Volúmenes de Postgres ---

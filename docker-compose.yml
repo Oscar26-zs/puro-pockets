@@ -91,5 +91,43 @@ services:
       mcp:
         condition: service_healthy
 
+  dashboard:
+    # Dashboard de solo lectura (Hito 10): API en /api y frontend compilado.
+    # Solo arranca con el perfil "dashboard" (COMPOSE_PROFILES=tunnel,dashboard en el homelab).
+    # NO pasa por el túnel de Cloudflare ni por el MCP: se publica en 127.0.0.1 (o en la IP privada
+    # de DASHBOARD_BIND_IP, p. ej. la de Tailscale) y se entra por la red privada.
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    profiles: ["dashboard"]
+    restart: unless-stopped
+    environment:
+      # Rol de SOLO LECTURA (scripts/create_dashboard_role.sql), con host "db". Sin respaldo al rol
+      # propietario: si falta o puede escribir, el dashboard no arranca.
+      DASHBOARD_DATABASE_URL: ${DASHBOARD_DATABASE_URL:-}
+      DASHBOARD_SESSION_SECRET: ${DASHBOARD_SESSION_SECRET:-}
+      DASHBOARD_COOKIE_SECURE: ${DASHBOARD_COOKIE_SECURE:-true}
+      # La misma contraseña del propietario (hash argon2 del Hito 3)
+      OWNER_PASSWORD_HASH: ${OWNER_PASSWORD_HASH:-}
+      DB_CONNECT_TIMEOUT: ${DB_CONNECT_TIMEOUT:-2}
+      APP_TIMEZONE: ${APP_TIMEZONE:-America/Costa_Rica}
+      USD_RATE_MIN: ${USD_RATE_MIN:-300}
+      USD_RATE_MAX: ${USD_RATE_MAX:-1000}
+    ports:
+      - "${DASHBOARD_BIND_IP:-127.0.0.1}:${DASHBOARD_PORT:-8080}:8080"
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5)"
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   pgdata:

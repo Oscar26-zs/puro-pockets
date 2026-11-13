@@ -93,8 +93,10 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-En cada push, GitHub Actions corre `ruff` y las pruebas unitarias
-([.github/workflows/ci.yml](.github/workflows/ci.yml)).
+En cada push, GitHub Actions corre `ruff`, las pruebas unitarias (incluida la API del dashboard) y,
+para el frontend del dashboard, lint, tipos, pruebas de componentes y la compilación
+([.github/workflows/ci.yml](.github/workflows/ci.yml)). Las pruebas de Playwright y axe del
+dashboard corren solo en el equipo de desarrollo (`cd web; npm run e2e`).
 
 Las pruebas de integración que usan la base crean una **base temporal propia**
 (`pp_test_<aleatorio>`) en el Postgres local y la borran al terminar: no tocan tus datos de
@@ -600,6 +602,123 @@ sesión del Hito 3.
   transferencia tiene un mes distinto del de su fecha. Su downgrade se niega si hay meses cerrados,
   salvo con `ALLOW_DESTRUCTIVE_DOWNGRADE=true` (solo en desarrollo).
 
+## Dashboard (Hito 10)
+
+Página web **privada y de solo lectura** con tus cifras: resumen del mes, bolsas y metas,
+movimientos con filtros, gasto por categoría, evolución de 6 meses y gastos fijos. Muestra lo mismo
+que Claude (usa las mismas consultas que las tools). La sirve el servicio `dashboard` de Compose
+(API en `/api` y la página), que **no pasa por el túnel de Cloudflare**: solo se llega por tu red
+privada. Contrato y decisiones: [specs/010-dashboard/plan.md](specs/010-dashboard/plan.md) y la
+sección "Dashboard" de [docs/plan-tecnico.md](docs/plan-tecnico.md).
+
+> Antes de empezar en el homelab: [respaldo manual](#respaldo-manual-de-la-base). Ningún paso
+> modifica tus datos, pero el rol nuevo se crea en la base real.
+
+### 1. Crear el rol de solo lectura (una vez, en el homelab)
+
+El script crea el rol `puro_dashboard`: puede leer las tablas de negocio y nada más (no escribe, no
+crea objetos y no puede leer las tablas `oauth_*`). No contiene contraseñas.
+
+```bash
+# Desde la carpeta del repositorio, con la base levantada
+docker compose exec -T db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+    < scripts/create_dashboard_role.sql
+# Fija tú la contraseña del rol (te la pide dos veces; no queda en el historial)
+docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\password puro_dashboard"'
+```
+
+Se puede volver a ejecutar (es idempotente). Si una migración futura agrega una tabla de negocio
+que el dashboard deba leer, se agrega al script y se ejecuta de nuevo.
+
+### 2. Generar el secreto de la sesión
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+### 3. Completar el `.env` del homelab
+
+Agrega (ver [.env.example](.env.example)); el dashboard usa la misma contraseña del propietario
+(`OWNER_PASSWORD_HASH`, Hito 3), no crea otra:
+
+```bash
+COMPOSE_PROFILES=tunnel,dashboard
+DASHBOARD_DATABASE_URL=postgresql+psycopg://puro_dashboard:<la-contraseña-del-paso-1>@db:5432/puro_pockets
+DASHBOARD_SESSION_SECRET=<el-valor-del-paso-2>
+DASHBOARD_BIND_IP=127.0.0.1        # o la IP de Tailscale del homelab (100.x.y.z), nunca 0.0.0.0
+DASHBOARD_PORT=8080
+DASHBOARD_COOKIE_SECURE=true       # false solo si entras por http a una IP de Tailscale o de la LAN
+```
+
+Si la contraseña del rol tiene caracteres especiales (`@`, `:`, `/`, `%`), escríbelos codificados en
+la URL (por ejemplo `@` → `%40`).
+
+### 4. Compilar y levantar
+
+```bash
+docker compose build dashboard
+docker compose up -d dashboard
+docker compose ps dashboard           # debe quedar "healthy"
+docker compose logs dashboard | tail  # "rol de solo lectura comprobado"
+```
+
+Al arrancar, el dashboard **comprueba el rol**: si puede escribir en alguna tabla de negocio, leer
+las `oauth_*`, crear objetos o es superusuario, se niega a arrancar y el registro dice qué permiso
+sobra. Tampoco arranca sin `DASHBOARD_DATABASE_URL`, sin un secreto de al menos 32 bytes o sin
+`OWNER_PASSWORD_HASH`. Nunca usa el rol propietario como respaldo.
+
+**Si la compilación no cabe en la memoria del homelab** (la etapa de Node necesita alrededor de
+1 GB), compila la imagen en la PC y cópiala:
+
+```bash
+# En la PC (misma arquitectura que el homelab, normalmente x86_64)
+docker build -f Dockerfile.dashboard -t puro-pockets-dashboard:latest .
+docker save puro-pockets-dashboard:latest | ssh <usuario>@<homelab> docker load
+# En el homelab: usar esa imagen sin volver a compilar
+docker compose up -d --no-build dashboard
+```
+
+(`puro-pockets-dashboard` es el nombre que Compose da a la imagen del servicio, así que la usa tal
+cual.)
+
+### 5. Entrar por la red privada
+
+- **Túnel SSH (sin instalar nada):** con `DASHBOARD_BIND_IP=127.0.0.1`, desde tu PC:
+  `ssh -N -L 8080:127.0.0.1:8080 <usuario>@<homelab>` y abre `http://127.0.0.1:8080`. Funciona con
+  `DASHBOARD_COOKIE_SECURE=true` (el navegador trata `127.0.0.1` como seguro).
+- **Tailscale:** con `DASHBOARD_BIND_IP=<IP de Tailscale del homelab>` y
+  `DASHBOARD_COOKIE_SECURE=false` (es `http`; el tráfico ya va cifrado por Tailscale), abre
+  `http://<IP de Tailscale>:8080` desde un equipo de tu tailnet. Para el celular, instala Tailscale
+  en él.
+- Nunca publiques el puerto en `0.0.0.0` ni en una IP pública, y no agregues el dashboard al túnel
+  de Cloudflare: `mcp.puropockets.space` no sirve `/` ni `/api` (hay una prueba que lo verifica).
+
+Entra con la contraseña del propietario. La sesión dura 12 horas; «Salir» la cierra. Tras 5
+contraseñas incorrectas desde la misma IP, el inicio de sesión se bloquea 15 minutos.
+
+### Privacidad y seguridad
+
+- El navegador guarda solo tu preferencia de tema; ningún dato financiero queda en el
+  almacenamiento local ni en la URL (en la URL va solo el mes, `?month=2026-11`).
+- Sin CDN, fuentes externas ni analíticas: la página no hace peticiones a otros sitios.
+- Los registros del servicio no tienen montos, notas, descripciones ni nombres de metas.
+- Rotar `DASHBOARD_SESSION_SECRET` cierra todas las sesiones abiertas.
+
+### Desarrollo del frontend (en la PC)
+
+```powershell
+cd web
+npm ci
+npm run dev          # http://127.0.0.1:5173, /api va a la API local en 127.0.0.1:8080
+npm run lint; npm run typecheck; npm test
+npm run e2e          # Playwright + axe (primera vez: npx playwright install chromium)
+```
+
+Para la API local: `uv run python -m puro_pockets.api` con las variables `DASHBOARD_*` apuntando a
+una base de desarrollo y un rol de solo lectura creado allí con el mismo script. En desarrollo, el
+«Panel de desarrollo» y `?state=` simulan los estados de carga, vacío, error y mes cerrado; la
+compilación de producción no los incluye.
+
 ## Estructura
 
 ```text
@@ -608,12 +727,15 @@ src/puro_pockets/
 ├── domain/        # reglas puras (sin MCP ni base de datos)
 ├── services/      # casos de uso
 ├── db/            # conexión a la base (SQLAlchemy + psycopg 3)
-└── mcp/           # servidor MCP y tools
+├── mcp/           # servidor MCP y tools
+└── api/           # API de solo lectura del dashboard (FastAPI, Hito 10)
+web/               # frontend del dashboard (React + Vite)
 migrations/        # Alembic
 tests/unit/        # pruebas unitarias
 tests/integration/ # pruebas con los servicios levantados (base temporal pp_test_*)
 tests/synthetic.py # datos sintéticos del invariante de integridad
 scripts/ping.py    # cliente de prueba
+scripts/create_dashboard_role.sql  # rol de solo lectura del dashboard (sin contraseñas)
 ```
 
 ## Actualizar el SDK de MCP

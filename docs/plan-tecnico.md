@@ -1,7 +1,7 @@
 # Plan técnico de Puro Pockets
 
-**Versión:** 0.11
-**Fecha:** 2026-11-11
+**Versión:** 0.12
+**Fecha:** 2026-11-12
 **Capa:** 2 en la gobernanza de `.specify/memory/constitution.md`. Decide la técnica; si contradice a
 la constitución, gana la constitución y se corrige este documento.
 
@@ -32,8 +32,8 @@ esquema o la arquitectura.
 | Autenticación del MCP | OAuth 2.1: el MCP es servidor de recursos y también servidor de autorización (ver "Autenticación OAuth") | [DECIDIDO] (Hito 3) |
 | Servidor de autorización de OAuth | Propio y mínimo, para un único usuario, sobre el módulo de autenticación del SDK `mcp==2.3.0`; contraseña con argon2 (`argon2-cffi`) | [DECIDIDO] (Hito 3) |
 | Pruebas y estilo | pytest y ruff; CI en GitHub Actions | [DECIDIDO] (Hito 1) |
-| Dashboard | React + Vite + TypeScript + Tailwind, con una librería de gráficos | [PROPUESTO] (sección 16) |
-| API del dashboard | Framework por decidir | [ABIERTO]: se resuelve en el Hito 10 |
+| Dashboard | React 19 + Vite + TypeScript + Tailwind 4 + convenciones de shadcn/ui + Recharts, en `web/` (ver "Dashboard") | [DECIDIDO] (Hito 10) |
+| API del dashboard | **FastAPI** (`fastapi>=0.162.5`, sobre el Starlette que trae `mcp`), servida con uvicorn; solo `GET` salvo inicio y cierre de sesión | [DECIDIDO] por el propietario (Hito 10) |
 | Ejecución | Homelab del propietario | [DECIDIDO] |
 
 ### Convención de idioma [DECIDIDO] (Hito 1)
@@ -69,6 +69,7 @@ Actualizar el SDK es una decisión deliberada, nunca automática:
 |---|---|---|---|---|
 | 2026-11-09 | Equipo de desarrollo (Windows 11, Docker Desktop con WSL 2, 7,7 GiB para Docker) | `db` | 25,1 MiB | 27,8 MiB |
 | 2026-11-09 | Equipo de desarrollo (Windows 11, Docker Desktop con WSL 2, 7,7 GiB para Docker) | `mcp` | 75,7 MiB | 78,6 MiB |
+| 2026-11-12 | Equipo de desarrollo (Windows 11, Docker Desktop con WSL 2, 7,7 GiB para Docker) | `dashboard` | 69,5 MiB | 71,1 MiB (tras 20 consultas a `/api`) |
 
 ### Estructura del código (Hito 1)
 
@@ -460,6 +461,63 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
 - **Registros:** sin montos, notas, nombres de bolsas ni de metas (solo mes y cuántas
   transferencias, ajustes y metas afectadas).
 
+### Dashboard [DECIDIDO] (Hito 10)
+
+Detalle en `specs/010-dashboard/` (spec, plan con el contrato completo y verificación). Fuente
+visual: `docs/dashboard.md` (manda en lo visual; esta capa y la constitución mandan en datos y
+reglas).
+
+- **Arquitectura:** servicio `dashboard` de Compose (`Dockerfile.dashboard`, dos etapas: Node
+  compila `web/`, Python sirve la API y `web/dist`). Código: `api/` (`app.py` rutas y middlewares,
+  `session.py`, `readonly.py`, `config.py`, `__main__.py`), `services/dashboard.py`
+  (`DashboardService`, compone `LedgerService`) y `domain/stats.py` (cálculos nuevos, puros).
+- **Una sola fuente de cifras (9.1, 11.1, 11.2):** resumen, bolsas, metas, movimientos, categorías y
+  gastos fijos salen de las mismas lecturas que las tools (`get_summary`, `get_bolsa_status`,
+  `get_goal_progress`, `list_transactions`, `top_categories`, `list_pending_recurring`). No hubo que
+  extraer funciones de las tools (ya eran delgadas) ni cambiar su comportamiento. Ninguna lectura
+  escribe. Una prueba compara la API con las tools llamadas por MCP sobre los mismos datos.
+- **Contrato de la API** (todo `GET` acepta `month=AAAA-MM`; colones enteros; USD como texto):
+  `GET /healthz` (sin sesión, sin datos), `GET /api/session`, `POST /api/session/login`,
+  `POST /api/session/logout`, `GET /api/summary`, `/api/pockets`, `/api/movements` (tipo, bolsa,
+  mes, `include_voided`, `page` 1 a 10, de 10 en 10), `/api/categories`, `/api/history` (6 meses),
+  `/api/fixed`, `/api/closures/pending`. Campos: `specs/010-dashboard/plan.md`, sección 3, y la
+  columna "Campo de la API" de `docs/dashboard.md`.
+- **Fórmulas nuevas** (sección 13.3): "ahorrado", "disponible del mes", fecha estimada y alertas,
+  todas [PROPUESTO].
+- **Autenticación:** la contraseña del propietario (`OWNER_PASSWORD_HASH`, argon2,
+  `scripts/hash_password.py` del Hito 3, `services/passwords.py`). Cookie `pp_session` firmada con
+  HMAC-SHA256 (`DASHBOARD_SESSION_SECRET`, al menos 32 bytes), HttpOnly, SameSite=Strict, Secure
+  según `DASHBOARD_COOKIE_SECURE` (por defecto `true`), 12 h. Sin tablas: cerrar sesión revoca la
+  cookie en memoria (un reinicio olvida las revocaciones; rotar el secreto invalida todas)
+  [PROPUESTO]. Límite de intentos con `LoginRateLimiter` (5 fallos por IP del socket en 15 min, 20
+  globales). Sin hash válido o sin secreto, el dashboard no arranca.
+- **Rol de solo lectura:** `DASHBOARD_DATABASE_URL` (obligatoria, sin respaldo a `DATABASE_URL`) con
+  el rol `puro_dashboard` de `scripts/create_dashboard_role.sql`: `SELECT` solo en las 12 tablas de
+  negocio que se leen (sin `oauth_*`, `idempotency_keys` ni `alembic_version`) y
+  `default_transaction_read_only`. Al arrancar, `api/readonly.py` comprueba con `pg_catalog` que el
+  rol no es superusuario, no crea objetos, no escribe en ninguna tabla de `public` ni usa sus
+  secuencias y no lee `oauth_*`; si no, sale con error. Una tabla de negocio nueva exige agregarla
+  al script.
+- **Seguridad HTTP:** verbos (`GET`; `POST` solo en sesión; el resto, 405), sin sesión 401 en todo
+  `/api` (también rutas inexistentes), CSP `default-src 'self'` con `frame-ancestors 'none'`
+  (`style-src 'unsafe-inline'` por los estilos en línea de Recharts; scripts sin excepciones),
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`,
+  `Cache-Control: no-store` en `/api` y en el HTML. Sin CORS. Inicio de sesión: JSON y mismo origen.
+- **Privacidad:** sin CDN, fuentes externas (pila del sistema) ni analíticas; datos solo en
+  memoria; en la URL solo `?month=`; en `localStorage` solo el tema (`pp-theme`). La compilación no
+  incluye los datos de ejemplo (`web/scripts/check-bundle.mjs`).
+- **Acceso privado:** puerto en `${DASHBOARD_BIND_IP:-127.0.0.1}:${DASHBOARD_PORT:-8080}`; se entra
+  por túnel SSH o Tailscale (README). El túnel de Cloudflare solo enruta `mcp.puropockets.space` a
+  `mcp:8000`; el MCP no sirve `/` ni `/api` (prueba). Perfil `dashboard` en Compose.
+- **Registros:** una línea por petición (método, ruta sin consulta, estado, duración); sin registro
+  de acceso de uvicorn; errores internos solo con el tipo. Nunca montos, notas, descripciones,
+  nombres de metas ni la consulta.
+- **Compilación en el homelab [PROPUESTO]:** la imagen se construye en el homelab; si la etapa de
+  Node no cabe en sus 4 GB, se construye en la PC y se copia (`docker save | ssh … docker load`).
+- **Pruebas:** en el CI, `pytest -m "not integration"` (API y dominio) y el job `web` (eslint, tsc,
+  vitest, compilación); en el equipo de desarrollo, la integración contra Postgres (rol de solo
+  lectura) y Playwright + axe (320 a 1920 px, 44 px, claro y oscuro) [PROPUESTO].
+
 ---
 
 ## 12. Integración con Claude (MCP)
@@ -510,7 +568,7 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
 
 ---
 
-## 13. Estadísticas y dashboard **[DECIDIDO en intención; detalle PROPUESTO]**
+## 13. Estadísticas y dashboard **[DECIDIDO] (Hito 10); fórmulas de 13.3 [PROPUESTO]**
 
 ### 13.1 Preguntas que debe responder
 - ¿En qué gasto más?
@@ -531,6 +589,35 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
 - Alertas: bolsa por encima de 80 % y 100 %, bolsa en negativo (rojo), cierre de mes pendiente, ingreso pendiente de repartir.
 - Totales en colones, con equivalente en dólares opcional.
 
+Implementación: ver "Dashboard (Hito 10)" y `docs/dashboard.md`.
+
+### 13.3 Fórmulas de las estadísticas [PROPUESTO] (Hito 10)
+
+Agregados de cifras oficiales (11.1, 11.2, 9), sin reglas de negocio nuevas; viven en
+`domain/stats.py`. Lo anulado no cuenta (RN-53).
+
+```
+Ahorrado(M) = base(M) + extras(M) + recibidas(M) − enviadas(M) + sobrantes_cierre(M)
+  base(M), extras(M)  = Σ asignado a bolsas acumulables por ingresos vigentes base / extra con mes
+                        presupuestario M (el saldo inicial no cuenta, RN-54)
+  sobrantes_cierre(M) = Σ transferencias cierre_de_mes con mes M desde una bolsa de consumo hacia
+                        una acumulable (destinos de sobrante, 10.2)
+  recibidas(M)        = Σ demás transferencias del mes M hacia una acumulable
+  enviadas(M)         = Σ transferencias del mes M desde una acumulable (incluye coberturas de
+                        cierre desde una acumulable, RN-52)
+  Entre dos acumulables, recibida y enviada se anulan; incluye bolsas archivadas.
+  La API entrega el total y el desglose (base, extra, transfers_in, transfers_out, closure_surplus).
+
+Disponible del mes(M) = Σ disponible (11.1) de las bolsas de consumo activas de get_summary(M)
+Ingresos del mes(M)   = income_total de get_summary(M) (base + extras repartidos, sin saldo inicial)
+Fecha estimada        = mes actual + ⌈faltante ÷ promedio mensual de RN-28⌉ meses, solo si
+                        projectable y faltante > 0 (el MCP sigue sin estimar: RN-28 deja la
+                        proyección a Claude; el dashboard es otro consumidor)
+Alerta de bolsa       = sobregasto si % usado ≥ 100 o saldo/disponible negativo (RN-38);
+                        uso alto si % usado ≥ 80 (13.2)
+Evolución             = 6 meses que terminan en M: ingresos, gastado y ahorrado de cada mes
+```
+
 
 ## 15. Requerimientos no funcionales
 
@@ -546,13 +633,14 @@ puerto `127.0.0.1:5432`, healthcheck con `pg_isready`) y `mcp` (imagen propia, p
 ## 16. Arquitectura propuesta **[PROPUESTO]**
 
 ```
-Claude (chat) ──► Servidor MCP ──► PostgreSQL ◄── API ◄── Dashboard (React)
-                  (tools)          (datos)
+Claude (chat) ──► Cloudflare ──► Servidor MCP ──► PostgreSQL ◄── API ◄── Dashboard (React)
+                  (túnel)        (tools)          (datos)        (solo    (red privada:
+                                                                  lectura)  SSH o Tailscale)
 ```
 
 - **Base de datos:** PostgreSQL en un contenedor Docker, con volumen persistente.
-- **MCP:** en Python, remoto por HTTPS mediante un túnel de Cloudflare (decisiones 9 y 10). El servidor de autorización de OAuth se decide en el Hito 3.
-- **Dashboard:** React + Vite + TypeScript + Tailwind, con una librería de gráficos (por ejemplo Recharts).
+- **MCP:** en Python, remoto por HTTPS mediante un túnel de Cloudflare (decisiones 9 y 10), con servidor de autorización OAuth propio (Hito 3).
+- **Dashboard:** React + Vite + TypeScript + Tailwind + Recharts, servido junto con su API (FastAPI) por el servicio `dashboard`; nunca por el túnel (Hito 10).
 - **Ejecución:** en el homelab del propietario.
 
 ---
@@ -865,3 +953,4 @@ inglés las tablas de los Hitos 4 a 6 (`pockets`, `categories`, `budget_month_al
 | 0.9 | 2026-11-11 | Hito 7: sección "Bolsas flexibles y metas (Hito 7)" (reajuste puro con prueba de propiedades, crear bolsa atómica con el conjunto completo del mes, lectura [PROPUESTO] de RN-15, archivado inmediato que reescribe el mes actual y los futuros, bolsa archivada en las tools anteriores, metas sin dinero propio con una sola fuente del saldo, evaluación centralizada de `lograda`, números del RN-28, confirmación con ficha, disparadores y downgrade protegido); esquema de la sección 17 con `pockets.archived_at` y `savings_goals` en inglés (migración `0006_pockets_goals`); catálogo y regla 12.2.2 actualizados; tabla concepto → tabla con metas y archivado. |
 | 0.10 | 2026-11-11 | Hito 8: sección "Transferencias (Hito 8)" (una sola función de cálculo para 9.1, 11.1 y 11.2, vista previa con efecto en metas y ficha, validaciones, bloqueo de las dos bolsas y nueva validación dentro de la transacción, archivado con bloqueo, inmutabilidad en la base, referencias `T-`, sobregasto guiado hacia la transferencia, idempotencia, downgrade protegido y registros); esquema de `transfers` en inglés con ON DELETE RESTRICT, nota ≤ 140 e índices (migración `0007_transfers`); catálogo y regla 12.2.2 actualizados; validaciones y tabla concepto → tabla con transferencias. |
 | 0.11 | 2026-11-11 | Hito 9: sección "Cierre de mes (Hito 9)" (regla única de mes cerrado usada por todas las escrituras y comprobada dentro de la transacción, qué mes se cierra y en qué orden, vista previa con datos y con propuesta, validación de 10.1, 10.2, RN-47, RN-50 y RN-52, ficha en dos mitades, transacción con bloqueo consultivo de cierres y bolsas bloqueadas, mes actual cerrado, cierre pendiente, ritual RN-51, destino sugerido 6.5, sin reapertura, CHECK del mes de las transferencias, idempotencia, downgrade y registros); esquema de `month_closures` y `closure_adjustments` en inglés (migración `0008_month_closures`); catálogo con `preview_month_close`, `close_month` y `set_surplus_destination`; regla 12.2.2, validaciones y tabla concepto → tabla actualizadas; se quitan las frases "hasta el Hito 9 todos los meses están abiertos". |
+| 0.12 | 2026-11-12 | Hito 10: API del dashboard en FastAPI (decisión del propietario; deja de estar [ABIERTO]) y dashboard [DECIDIDO]; sección "Dashboard (Hito 10)" (arquitectura, una sola fuente de cifras, contrato de la API, autenticación con cookie firmada y la contraseña del Hito 3, rol de solo lectura comprobado al arrancar, cabeceras, privacidad, acceso privado, registros); sección 13.3 con las fórmulas [PROPUESTO] de ahorrado, disponible, fecha estimada, alertas y evolución; arquitectura de la sección 16 actualizada; medición de memoria del servicio `dashboard`. Sin cambios de esquema. |

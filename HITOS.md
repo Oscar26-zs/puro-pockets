@@ -1,6 +1,6 @@
 # Puro Pockets: hoja de ruta por hitos
 
-**Versión:** 0.12 (borrador)
+**Versión:** 0.13 (borrador)
 **Fecha:** 2026-11-09
 **Fuentes de verdad:** reglas en `.specify/memory/constitution.md` (referenciadas como `RN-xx`); técnica en `docs/plan-tecnico.md`.
 **Este documento define:** qué entrega cada hito, en qué orden y cuándo se considera terminado. No repite reglas de negocio ni el esquema de datos: los referencia.
@@ -63,7 +63,7 @@ Las reglas no negociables (datos reales, capa de negocio, invariante de integrid
 | 7 | Bolsas flexibles y metas | Crear y archivar bolsas con reajuste, metas | RN-13 a 25, 28, 29 |
 | 8 | Transferencias | Mover dinero entre bolsas con registro | RN-39 a 44, 58; completa RN-18 |
 | 9 | Cierre de mes | Déficits, sobrantes, cierre atómico y meses cerrados | RN-44, 46 a 53, 58; 6.5 |
-| 10 | Dashboard | Estadísticas y gráficos | Sección 13 del plan técnico |
+| 10 | Dashboard | Estadísticas y gráficos, de solo lectura y en red privada | Sección 13 del plan técnico; muestra RN-06, 38, 48 a 50 y 53 |
 | 11 | Operación y endurecimiento | Respaldos probados, monitoreo, revisión de seguridad | (no funcional) |
 
 El **MVP usable** llega al terminar el Hito 5: puedes cargar tu saldo inicial, registrar tu salario y tus gastos desde Claude y ver el estado de cada bolsa.
@@ -72,9 +72,8 @@ El **MVP usable** llega al terminar el Hito 5: puedes cargar tu saldo inicial, r
 
 ## 3. Decisiones que bloquean hitos
 
-| Decisión pendiente | Debe resolverse antes de | Dónde se resuelve |
-|---|---|---|
-| Framework de la API para el dashboard | Hito 10 | `/speckit-clarify` del Hito 10 |
+No hay decisiones pendientes que bloqueen hitos. La última (framework de la API del dashboard) se
+resolvió en el Hito 10: FastAPI, registrado en `docs/plan-tecnico.md`.
 
 ---
 
@@ -422,20 +421,45 @@ RN-51 quedó decidida el 2026-11-11 (constitución 1.0.5).
 **Objetivo:** ver tus finanzas en gráficos y tablas, en privado.
 
 ### Entregables
-- **Capa de lectura (API)** que reutiliza `services/`, sin duplicar reglas. Framework por decidir en este hito.
-- **Dashboard** en React + Vite + TypeScript + Tailwind, con gráficos.
-- **Componentes** de la sección 13.2 del plan técnico (`docs/plan-tecnico.md`): tarjetas, progreso por bolsa (original vs. ajustado), dona por categoría, evolución mensual, tabla con filtros, fijos pagados y pendientes, tarjeta por meta, alertas.
-- **Acceso privado:** el dashboard no se expone por el túnel público; se accede por VPN privada (por ejemplo Tailscale) o red local.
-- **Autenticación propia del dashboard.**
+- **Capa de lectura (API)** en **FastAPI** (decisión del propietario, 2026-11-12), solo `GET` salvo
+  el inicio y el cierre de sesión, que reutiliza `services/` (las mismas lecturas que
+  `get_summary`, `get_bolsa_status`, `get_goal_progress`, `list_transactions`, `top_categories` y
+  `list_pending_recurring`) sin duplicar reglas; los cálculos nuevos (ahorrado, disponible del mes,
+  fecha estimada, alertas, evolución) en `domain/stats.py` (sección 13.3 del plan técnico).
+- **Dashboard** en React + Vite + TypeScript + Tailwind + Recharts (`web/`), con el diseño de
+  `docs/dashboard.md` (tokens, tipografía, puntos de corte, componentes, `copy.ts`, `format.ts`).
+- **Componentes** de la sección 13.2 del plan técnico (`docs/plan-tecnico.md`) con el diseño de
+  `docs/dashboard.md`: tarjetas, progreso por bolsa (original vs. ajustado), dona por categoría,
+  evolución mensual, tabla con filtros, fijos pagados y pendientes, tarjeta por meta, alertas.
+- **Acceso privado:** servicio `dashboard` de Compose (perfil `dashboard`) publicado en `127.0.0.1`
+  o en una IP privada (`DASHBOARD_BIND_IP`); se entra por túnel SSH o Tailscale. No pasa por el
+  túnel de Cloudflare ni por el MCP.
+- **Autenticación propia del dashboard:** la contraseña del propietario (argon2 del Hito 3), cookie
+  firmada HttpOnly y SameSite=Strict de 12 h, límite de intentos; sin tablas nuevas.
+- **Rol de solo lectura** (`scripts/create_dashboard_role.sql`) sin acceso a `oauth_*`; la API se
+  niega a arrancar con un rol que puede escribir o leer `oauth_*`.
+- **Cabeceras de seguridad y privacidad:** CSP, sin CORS, sin CDN ni analíticas, nada financiero en
+  el almacenamiento del navegador ni en la URL (solo el mes).
 
 ### Prompt para /speckit-specify
 > El propietario quiere consultar en una página web privada cuánto ingresó, cuánto gastó y cuánto le queda por bolsa, en qué categorías gasta más, cómo evolucionan sus meses y cómo van sus metas de ahorro. Los datos deben coincidir exactamente con los que le reporta Claude. Incluye pruebas automáticas que verifiquen los criterios de aceptación.
 
 ### Terminado cuando
-- Los totales del dashboard coinciden con `get_summary` para el mismo mes.
-- El dashboard no es accesible desde internet público.
+- Los totales del dashboard coinciden con `get_summary` para el mismo mes, y bolsas, metas y
+  movimientos con `get_bolsa_status`, `get_goal_progress` y `list_transactions` (prueba con las
+  tools por MCP).
+- El dashboard no es accesible desde internet público: `mcp.puropockets.space` no sirve `/` ni
+  `/api`, y el puerto solo se publica en `127.0.0.1` o en una IP privada.
 - Los movimientos anulados se distinguen y no suman.
 - Los totales se muestran en colones.
+- Sin sesión, todo `/api` responde 401; otro verbo, 405; la contraseña mala y el exceso de intentos
+  se rechazan; la cookie es HttpOnly y SameSite=Strict.
+- La API no arranca con un rol que puede escribir en tablas de negocio o leer `oauth_*`.
+- "Ahorrado" y la evolución coinciden con un conjunto sintético calculado a mano.
+- Los registros no tienen montos, notas, descripciones ni nombres de metas.
+- Sin scroll horizontal de 320 a 1920 px, navegación con objetivos de 44 px y sin violaciones graves
+  de accesibilidad en claro y oscuro (Playwright y axe, en el equipo de desarrollo).
+- Las pruebas de los hitos anteriores siguen pasando.
 
 ---
 
@@ -478,3 +502,4 @@ RN-51 quedó decidida el 2026-11-11 (constitución 1.0.5).
 | 0.10 | 2026-11-11 | Se quita de la sección 3 la decisión #11 (resuelta; constitución 1.0.3). Hito 7: entregables con la migración `0006_pockets_goals` (conserva los datos del Hito 6), reajuste que escribe el conjunto completo del mes, archivado que redistribuye el mes actual y los futuros, metas evaluadas en cada operación que sube un saldo, metas en el contexto del extra; reglas de la vista general y del entregable de metas ajustadas (RN-26 y 27 derogadas, RN-30 resuelta); cuatro criterios más en "Terminado cuando". Hito 8: pruebas pendientes del archivado de bolsas con saldo. |
 | 0.11 | 2026-11-11 | Hito 8: RN-58 decidida (constitución 1.0.4); vista general sin RN-45 (derogada) y con RN-18 completada; entregables con la migración `0007_transfers` (conserva los datos del Hito 7), tabla inmutable en inglés, vista previa con ficha, bloqueo de las dos bolsas, presupuesto ajustado con una sola función, advertencia de sobregasto con los cálculos nuevos e invariante con transferencias; cuatro criterios más en "Terminado cuando" (concurrencia, inmutabilidad, aprobación explícita, migración y downgrade). |
 | 0.12 | 2026-11-11 | Nuevo flujo de trabajo por hito desde el Hito 9 (sección 1): Claude escribe `spec.md`, un `plan.md` delgado con todo dentro y un `progreso.md`, hace una autorrevisión contra la constitución e implementa de una vez, sin los comandos de Spec Kit (decisión del propietario, 2026-11-11). Hito 9: RN-51 decidida (constitución 1.0.5); vista general con RN-44, 46 a 53, 58 y 6.5; entregables con la migración `0008_month_closures`, la regla única de mes cerrado para todas las tools, la alerta de cierre pendiente, el ritual en las instrucciones del servidor y el destino sugerido; seis criterios más en "Terminado cuando". Se quitan de los Hitos 5 y 8 las frases "todos los meses están abiertos". |
+| 0.13 | 2026-11-12 | Se quita de la sección 3 la decisión del framework de la API del dashboard (resuelta por el propietario: FastAPI; registrada en `docs/plan-tecnico.md` v0.12). Hito 10: entregables con la referencia de diseño al archivo real (`docs/dashboard.md`), la capa de lectura que reutiliza `services/`, el servicio `dashboard` en red privada, la autenticación propia con la contraseña del Hito 3, el rol de solo lectura comprobado al arrancar, cabeceras y privacidad; vista general con las reglas que muestra; seis criterios más en "Terminado cuando". |

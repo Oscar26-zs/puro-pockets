@@ -19,6 +19,9 @@ FORBIDDEN_IN_DOMAIN = (
     "puro_pockets.db",
     "puro_pockets.mcp",
     "puro_pockets.services",
+    "puro_pockets.api",
+    "fastapi",
+    "starlette",
 )
 
 

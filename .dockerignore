@@ -16,3 +16,9 @@ docs/
 *.log
 Dockerfile*
 .dockerignore
+# Frontend (Hito 10): la imagen compila web/ desde el código, sin dependencias ni artefactos locales
+web/node_modules/
+web/dist/
+web/test-results/
+web/playwright-report/
+web/e2e/

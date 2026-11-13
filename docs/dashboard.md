@@ -255,37 +255,37 @@ La columna **Campo de la API** queda intencionalmente vacía para completar al d
 
 | Campo de `data/mock.ts` | Tipo actual | Campo de la API |
 |---|---|---|
-| `dashboardData.month` | `string` (`"2026-11"`) | |
-| `dashboardData.closed` | `boolean` | |
-| `dashboardData.pendingClose` | `string` | |
-| `dashboardData.income` | `number` | |
-| `dashboardData.spent` | `number` | |
-| `dashboardData.available` | `number` | |
-| `dashboardData.saved` | `number` | |
-| `dashboardData.unassigned.crcCount` | `number` | |
-| `dashboardData.unassigned.crcTotal` | `number` | |
-| `dashboardData.unassigned.usdCount` | `number` | |
-| `dashboardData.unassigned.usdTotal` | `number` | |
-| `dashboardData.pockets` | `Pocket[]` | |
-| `Pocket.name` | `string` | |
-| `Pocket.kind` | `"consumo" \| "acumulable"` | |
-| `Pocket.assigned`, `sent`, `received`, `adjusted`, `spent`, `available`, `used`, `balance` | `number \| undefined` | |
-| `Pocket.goal` | `{ name: string; target: number; progress: number; remaining: number; monthlyAverage: number; projectable: boolean } \| undefined` | |
-| `dashboardData.categories` | `{ name: string; value: number }[]` | |
-| `dashboardData.history` | `{ month: string; income: number; spent: number; saved: number }[]` | |
-| `dashboardData.fixed` | `{ name: string; amount: number; currency: "CRC" \| "USD"; status: "Pagado" \| "Pendiente" \| "Atrasado"; detail: string }[]` (forma inferida) | |
-| `dashboardData.movements` | `Movement[]` | |
-| `Movement.ref` | `string` | |
-| `Movement.date` | `string` | |
-| `Movement.description` | `string` | |
-| `Movement.pocket` | `string` | |
-| `Movement.amount` | `number` | |
-| `Movement.currency` | `"CRC" \| "USD"` | |
-| `Movement.type` | `"gasto" \| "ingreso" \| "transferencia"` | |
-| `Movement.status` | `"pending" \| "void" \| undefined` | |
-| `Movement.reason` | `string \| undefined` | |
-| `ThemeMode` | `"light" \| "dark" \| "system"` | |
-| `Screen` | `"Resumen" \| "Bolsas" \| "Movimientos"` | |
+| `dashboardData.month` | `string` (`"2026-11"`) || `GET /api/summary` → `month` |
+| `dashboardData.closed` | `boolean` || `summary.month_closed` (también `pockets.month_closed`) |
+| `dashboardData.pendingClose` | `string` || `summary.pending_closure[].month` (aviso `alerts[].kind = close_pending`) |
+| `dashboardData.income` | `number` || `summary.income` |
+| `dashboardData.spent` | `number` || `summary.spent` |
+| `dashboardData.available` | `number` || `summary.available` |
+| `dashboardData.saved` | `number` || `summary.saved` (desglose en `summary.saved_breakdown`) |
+| `dashboardData.unassigned.crcCount` | `number` || `summary.unassigned.crc_count` |
+| `dashboardData.unassigned.crcTotal` | `number` || `summary.unassigned.crc_total` |
+| `dashboardData.unassigned.usdCount` | `number` || `summary.unassigned.usd_count` |
+| `dashboardData.unassigned.usdTotal` | `number` || `summary.unassigned.usd_total` (texto, p. ej. `"25.00"`) |
+| `dashboardData.pockets` | `Pocket[]` || `GET /api/pockets` → `items` |
+| `Pocket.name` | `string` || `items[].name` |
+| `Pocket.kind` | `"consumo" \| "acumulable"` || `items[].kind` |
+| `Pocket.assigned`, `sent`, `received`, `adjusted`, `spent`, `available`, `used`, `balance` | `number \| undefined` || `assigned`, `sent`, `received`, `adjusted`, `spent`, `available`, `used` (y `used_original`), `balance`; además `negative` y `alert` (`warning` / `danger`) |
+| `Pocket.goal` | `{ name: string; target: number; progress: number; remaining: number; monthlyAverage: number; projectable: boolean } \| undefined` || `items[].goal`: `name`, `target`, `progress`, `remaining`, `monthly_average`, `projectable`; además `estimated_month`, `reference`, `status`, `balance`, `excess` |
+| `dashboardData.categories` | `{ name: string; value: number }[]` || `GET /api/categories` → `items[].name`, `items[].value` (y `count`, `percent`; total en `total`) |
+| `dashboardData.history` | `{ month: string; income: number; spent: number; saved: number }[]` || `GET /api/history` → `months[].month` (AAAA-MM), `income`, `spent`, `saved` (colones) |
+| `dashboardData.fixed` | `{ name: string; amount: number; currency: "CRC" \| "USD"; status: "Pagado" \| "Pendiente" \| "Atrasado"; detail: string }[]` (forma inferida) || `GET /api/fixed` → `items[].name`, `amount` (texto) y `amount_crc`, `currency`, `status` (`paid` / `pending` / `overdue`), `expense_reference` o `due_date` |
+| `dashboardData.movements` | `Movement[]` || `GET /api/movements` → `items` |
+| `Movement.ref` | `string` || `items[].ref` |
+| `Movement.date` | `string` || `items[].date` |
+| `Movement.description` | `string` || `items[].description` (ingresos: `kind`; transferencias: `from_pocket`, `to_pocket`) |
+| `Movement.pocket` | `string` || `items[].pocket` (transferencias: `from_pocket`, `to_pocket`; ingresos: `pending`) |
+| `Movement.amount` | `number` || `items[].amount_crc` (CRC) u `original_amount` (USD, texto); el signo sale de `type` |
+| `Movement.currency` | `"CRC" \| "USD"` || `items[].currency` |
+| `Movement.type` | `"gasto" \| "ingreso" \| "transferencia"` || `items[].type` |
+| `Movement.status` | `"pending" \| "void" \| undefined` || `items[].voided` (`void`) y `items[].pending` (`pending`); motivo de anulación en `void_reason` |
+| `Movement.reason` | `string \| undefined` || `items[].reason` (código: `cubrir_sobregasto`, `reasignacion`, `ajuste`, `cierre_de_mes`) |
+| `ThemeMode` | `"light" \| "dark" \| "system"` || — (no viene de la API: preferencia local en `localStorage`, clave `pp-theme`) |
+| `Screen` | `"Resumen" \| "Bolsas" \| "Movimientos"` || — (no viene de la API: estado local del frontend) |
 
 ## 9. Formatos
 
